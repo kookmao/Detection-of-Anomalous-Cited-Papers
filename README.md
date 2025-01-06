@@ -49,11 +49,11 @@ condacolab.install()
 !conda install -n myenv matplotlib -y
 !conda install -n myenv ipykernel -y
 !conda install -n myenv pandas -y
-```
-## Prepare Data:
-```
+
 %cd Detection-of-Anomalous-Cited-Papers
 ```
+## Prepare Data:
+
 ```
 !conda run -n myenv --live-stream python 0_prepare_data.py --dataset year_1993 --anomaly_per 0.1
 ```
