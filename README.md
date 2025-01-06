@@ -29,17 +29,15 @@ python 1_train.py --dataset five_year --anomaly_per 0.1
 
 
 # Google Colab setup:
-### Initialize environment:
+### Clone Repository:
+```
+!git clone https://github.com/kookmao/Detection-of-Anomalous-Cited-Papers
+```
+Refresh after running this cell:
 ```
 !pip install -q condacolab
 import condacolab
 condacolab.install()
-```
-### Restart after running the cell above
-```
-!conda create -n myenv python=3.8 -y
-!conda init myenv
-!conda activate myenv
 ```
 ### Activate environment and install dependencies:
 ```
