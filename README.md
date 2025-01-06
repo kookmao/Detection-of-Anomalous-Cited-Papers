@@ -25,19 +25,19 @@ python 1_train.py --dataset five_year --anomaly_per 0.1
 
 
 # Google Colab setup:
-## initialize environment:
+### Initialize environment:
 ```
 !pip install -q condacolab
 import condacolab
 condacolab.install()
 ```
-## restart after running the cell above
+### Restart after running the cell above
 ```
 !conda create -n myenv python=3.8 -y
 !conda init myenv
 !conda activate myenv
 ```
-## activate environment and install dependencies:
+### Activate environment and install dependencies:
 ```
 !conda create -n myenv python=3.8 -y
 !conda init myenv
