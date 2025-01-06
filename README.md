@@ -16,7 +16,7 @@ pip install -r requitements.txt
 ```
 
 
-## Usage
+# Usage
 ### Step 0: Prepare Data
 ```
 python 0_prepare_data.py --dataset five_year --anomaly_per 0.1
