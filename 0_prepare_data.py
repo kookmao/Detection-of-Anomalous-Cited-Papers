@@ -16,7 +16,7 @@ def preprocessDataset(dataset):
             comments='%',
             delimiter=' ')
         edges = edges[:, 0:2].astype(dtype=int)
-    elif dataset in ['btc_alpha', 'btc_otc','year_1992','year_1993']:
+    elif dataset in ['btc_alpha', 'btc_otc','year_1992','year_1993','five_year']:
         if dataset == 'btc_alpha':
             file_name = 'data/raw/' + 'soc-sign-bitcoinalpha.csv'
         elif dataset =='btc_otc':
@@ -25,6 +25,8 @@ def preprocessDataset(dataset):
             file_name = 'data/raw/' + '1992_remapped.csv'
         elif dataset =='year_1993':
             file_name = 'data/raw/' + '1993_remapped.csv'
+        elif dataset =='five_year':
+            file_name = 'data/raw/' + 'five_year.csv'
         with open(file_name) as f:
             lines = f.read().splitlines()
         edges = [[float(r) for r in row.split(',')] for row in lines]
@@ -128,12 +130,12 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993'], default='uci')
+    parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993','five_year'], default='uci')
     parser.add_argument('--anomaly_per' ,choices=[0.01, 0.05, 0.1] , type=float, default=None)
     parser.add_argument('--train_per', type=float, default=0.5)
     args = parser.parse_args()
 
-    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300 }
+    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':2000 } #there are ~2000 avg rows per year (cit-hetpth)
 
     if args.anomaly_per is None:
         anomaly_pers = [0.01, 0.05, 0.10]

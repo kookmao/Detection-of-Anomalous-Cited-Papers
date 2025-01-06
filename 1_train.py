@@ -7,7 +7,7 @@ import torch
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993'], default='uci')
+parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993','five_year'], default='uci')
 parser.add_argument('--anomaly_per', choices=[0.01, 0.05, 0.1], type=float, default=0.1)
 parser.add_argument('--train_per', type=float, default=0.5)
 
