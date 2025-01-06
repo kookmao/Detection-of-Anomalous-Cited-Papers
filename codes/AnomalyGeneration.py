@@ -3,32 +3,6 @@ import numpy as np
 from scipy.sparse import csr_matrix,coo_matrix
 from sklearn.cluster import SpectralClustering
 
-import os
-import matplotlib.pyplot as plt
-import networkx as nx
-
-
-def save_graph_snapshot(edges, snapshot_index, output_dir='graph_snapshots'):
-        """
-        Visualizes and saves a graph snapshot as an image.
-        :param edges: List of edges in the graph.
-        :param snapshot_index: The index of the snapshot (used for naming the file).
-        :param output_dir: Directory where the graph images will be saved.
-        """
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        G = nx.Graph()
-        G.add_edges_from(edges)
-        plt.figure(figsize=(8, 8))
-
-        # Use a layout compatible with older scipy versions
-        pos = nx.circular_layout(G)  # Change to circular layout
-        nx.draw(G, pos, with_labels=False, node_size=2,width=0.1)
-
-        plt.title(f"Snapshot {snapshot_index}")
-        plt.savefig(f"{output_dir}/snapshot_{snapshot_index}.png")
-        plt.close()
 
 def anomaly_generation(ini_graph_percent, anomaly_percent, data, n, m, seed = 1):
     np.random.seed(seed)
@@ -251,7 +225,5 @@ if __name__ == "__main__":
     n = len(vertices)
 
     synthetic_test, train_mat, train = anomaly_generation(0.5, 0.1, edges, n, m)
-    save_graph_snapshot(train.tolist(), 'train', output_dir='anomaly_graphs')
-    save_graph_snapshot(synthetic_test[:, :2].tolist(), 'test', output_dir='anomaly_graphs')
 
     print(train)

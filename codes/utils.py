@@ -1,6 +1,5 @@
 import numpy as np
 import networkx as nx
-import matplotlib.pyplot as plt
 import torch
 
 # WL dict
@@ -28,12 +27,12 @@ def compute_zero_WL(node_list, link_list):
     for i in node_list:
         WL_dict[i] = 0
     return WL_dict
-def compute_batch_hop(node_list, edges_all, num_snap, Ss, k=5, window_size=1):
-    import matplotlib.pyplot as plt
-    import networkx as nx
 
-    batch_hop_dicts = [None] * (window_size - 1)
-    s_ranking = [0] + list(range(k + 1))
+# batching + hop + int + time
+def compute_batch_hop(node_list, edges_all, num_snap, Ss, k=5, window_size=1):
+
+    batch_hop_dicts = [None] * (window_size-1)
+    s_ranking = [0] + list(range(k+1))
 
     Gs = []
     for snap in range(num_snap):
@@ -42,55 +41,41 @@ def compute_batch_hop(node_list, edges_all, num_snap, Ss, k=5, window_size=1):
         G.add_edges_from(edges_all[snap])
         Gs.append(G)
 
-    # Prepare live plot
-    plt.ion()  # Turn on interactive mode
-    fig, ax = plt.subplots(figsize=(8, 8))
-
     for snap in range(window_size - 1, num_snap):
         batch_hop_dict = {}
-
+        # S = Ss[snap]
         edges = edges_all[snap]
-        G = Gs[snap]
-        
-        # Clear the previous plot
-        ax.clear()
 
-        # Draw the graph for the current snapshot
-        pos = nx.circular_layout(G)  # Use circular layout
-        nx.draw(G, pos, ax=ax, with_labels=False, node_size=2,width=0.1)
-        ax.set_title(f"Snapshot {snap}")
-
-        # Pause briefly to update the display
-        plt.pause(0.1)  # Adjust the pause duration as needed
+        # G = nx.Graph()
+        # G.add_nodes_from(node_list)
+        # G.add_edges_from(edges)
 
         for edge in edges:
             edge_idx = str(snap) + '_' + str(edge[0]) + '_' + str(edge[1])
             batch_hop_dict[edge_idx] = []
             for lookback in range(window_size):
+                # s = np.array(Ss[snap-lookback][edge[0]] + Ss[snap-lookback][edge[1]].todense()).squeeze()
                 s = Ss[snap - lookback][edge[0]] + Ss[snap - lookback][edge[1]]
-                s[edge[0]] = -1000  # don't pick myself
-                s[edge[1]] = -1000  # don't pick myself
+                s[edge[0]] = -1000 # don't pick myself
+                s[edge[1]] = -1000 # don't pick myself
                 top_k_neighbor_index = s.argsort()[-k:][::-1]
 
                 indexs = np.hstack((np.array([edge[0], edge[1]]), top_k_neighbor_index))
 
                 for i, neighbor_index in enumerate(indexs):
                     try:
-                        hop1 = nx.shortest_path_length(Gs[snap - lookback], source=edge[0], target=neighbor_index)
+                        hop1 = nx.shortest_path_length(Gs[snap-lookback], source=edge[0], target=neighbor_index)
                     except:
                         hop1 = 99
                     try:
-                        hop2 = nx.shortest_path_length(Gs[snap - lookback], source=edge[1], target=neighbor_index)
+                        hop2 = nx.shortest_path_length(Gs[snap-lookback], source=edge[1], target=neighbor_index)
                     except:
                         hop2 = 99
                     hop = min(hop1, hop2)
                     batch_hop_dict[edge_idx].append((neighbor_index, s_ranking[i], hop, lookback))
         batch_hop_dicts.append(batch_hop_dict)
 
-    plt.ioff()  # Turn off interactive mode when done
-    #plt.show()  # Ensure the last frame remains visible
     return batch_hop_dicts
-
 
 # Dict to embeddings
 def dicts_to_embeddings(feats, batch_hop_dicts, wl_dict, num_snap, use_raw_feat=False):

@@ -5,30 +5,7 @@ import scipy.sparse as sp
 from numpy.linalg import inv
 import pickle
 import os
-import matplotlib.pyplot as plt
-import networkx as nx
 
-def save_graph_snapshot(edges, snapshot_index, output_dir='graph_snapshots'):
-        """
-        Visualizes and saves a graph snapshot as an image.
-        :param edges: List of edges in the graph.
-        :param snapshot_index: The index of the snapshot (used for naming the file).
-        :param output_dir: Directory where the graph images will be saved.
-        """
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        G = nx.Graph()
-        G.add_edges_from(edges)
-        plt.figure(figsize=(8, 8))
-
-        # Use a layout compatible with older scipy versions
-        pos = nx.circular_layout(G)  # Change to circular layout
-        nx.draw(G, pos, with_labels=False, node_size=2,width=0.1)
-
-        plt.title(f"Snapshot {snapshot_index}")
-        plt.savefig(f"{output_dir}/snapshot_{snapshot_index}.png")
-        plt.close()
 
 class DynamicDatasetLoader(dataset):
     c = 0.15
@@ -43,12 +20,8 @@ class DynamicDatasetLoader(dataset):
     anomaly_per = 0.1
     train_per = 0.5
 
-    
-
     def __init__(self, seed=None, dName=None, dDescription=None):
         super(DynamicDatasetLoader, self).__init__(dName, dDescription)
-        
-    
 
     def load_hop_wl_batch(self):  #load the "raw" WL/Hop/Batch dict
         print('Load WL Dictionary')
@@ -185,7 +158,6 @@ class DynamicDatasetLoader(dataset):
                 pickle.dump(eigen_adjs_sparse, f, pickle.HIGHEST_PROTOCOL)
 
         return adjs, eigen_adjs
-    
 
     def load(self):
         """Load dynamic network dataset"""
@@ -198,10 +170,6 @@ class DynamicDatasetLoader(dataset):
         num_snap = test_size + train_size
 
         edges = [np.vstack((rows[i], cols[i])).T for i in range(num_snap)]
-
-        for i, edge_list in enumerate(edges):
-            save_graph_snapshot(edge_list, i, output_dir='graph_snapshots')
-
         adjs, eigen_adjs = self.get_adjs(rows, cols, weights, nb_nodes)
 
         labels = [torch.LongTensor(label) for label in labels]

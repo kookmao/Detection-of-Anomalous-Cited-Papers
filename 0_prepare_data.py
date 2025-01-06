@@ -4,8 +4,6 @@ import pickle
 import time
 import os
 import argparse
-import matplotlib.pyplot as plt
-import networkx as nx
 
 def preprocessDataset(dataset):
     print('Preprocess dataset: ' + dataset)
@@ -18,11 +16,15 @@ def preprocessDataset(dataset):
             comments='%',
             delimiter=' ')
         edges = edges[:, 0:2].astype(dtype=int)
-    elif dataset in ['btc_alpha', 'btc_otc']:
+    elif dataset in ['btc_alpha', 'btc_otc','year_1992','year_1993']:
         if dataset == 'btc_alpha':
             file_name = 'data/raw/' + 'soc-sign-bitcoinalpha.csv'
         elif dataset =='btc_otc':
             file_name = 'data/raw/' + 'soc-sign-bitcoinotc.csv'
+        elif dataset =='year_1992':
+            file_name = 'data/raw/' + '1992_remapped.csv'
+        elif dataset =='year_1993':
+            file_name = 'data/raw/' + '1993_remapped.csv'
         with open(file_name) as f:
             lines = f.read().splitlines()
         edges = [[float(r) for r in row.split(',')] for row in lines]
@@ -54,27 +56,6 @@ def preprocessDataset(dataset):
         fmt='%d')
     print('Preprocess finished! Time: %.2f s' % (time.time() - t0))
 
-def save_graph_snapshot(edges, snapshot_index, output_dir='graph_snapshots'):
-    """
-    Visualizes and saves a graph snapshot as an image.
-    :param edges: List of edges in the graph.
-    :param snapshot_index: The index of the snapshot (used for naming the file).
-    :param output_dir: Directory where the graph images will be saved.
-    """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    plt.figure(figsize=(8, 8))
-
-    # Use a layout compatible with older scipy versions
-    pos = nx.circular_layout(G)  # Change to circular layout
-    nx.draw(G, pos, with_labels=False, node_size=2,width=0.1)
-
-    plt.title(f"Snapshot {snapshot_index}")
-    plt.savefig(f"{output_dir}/snapshot_{snapshot_index}.png")
-    plt.close()
 
 def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     print('Generating data with anomaly for Dataset: ', dataset)
@@ -87,10 +68,6 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
         comments='%',
         delimiter=' ')
     edges = edges[:, 0:2].astype(dtype=int)
-
-    save_graph_snapshot(edges.tolist(), 0, output_dir='prepared_graphs')
-
-
     vertices = np.unique(edges)
     m = len(edges)
     n = len(vertices)
@@ -151,12 +128,12 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc'], default='uci')
+    parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993'], default='uci')
     parser.add_argument('--anomaly_per' ,choices=[0.01, 0.05, 0.1] , type=float, default=None)
     parser.add_argument('--train_per', type=float, default=0.5)
     args = parser.parse_args()
 
-    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000}
+    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300 }
 
     if args.anomaly_per is None:
         anomaly_pers = [0.01, 0.05, 0.10]

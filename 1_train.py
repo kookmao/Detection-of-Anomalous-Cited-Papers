@@ -7,20 +7,20 @@ import torch
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc'], default='uci')
+parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993'], default='uci')
 parser.add_argument('--anomaly_per', choices=[0.01, 0.05, 0.1], type=float, default=0.1)
 parser.add_argument('--train_per', type=float, default=0.5)
 
-parser.add_argument('--neighbor_num', type=int, default=5)
-parser.add_argument('--window_size', type=int, default=2)
+parser.add_argument('--neighbor_num', type=int, default=10)
+parser.add_argument('--window_size', type=int, default=3) #at least 2
 
-parser.add_argument('--embedding_dim', type=int, default=32)
-parser.add_argument('--num_hidden_layers', type=int, default=2)
-parser.add_argument('--num_attention_heads', type=int, default=2)
+parser.add_argument('--embedding_dim', type=int, default=64) #32
+parser.add_argument('--num_hidden_layers', type=int, default=3) #2
+parser.add_argument('--num_attention_heads', type=int, default=4) #2
 
 parser.add_argument('--max_epoch', type=int, default=200)
-parser.add_argument('--lr', type=float, default=0.001)
-parser.add_argument('--weight_decay', type=float, default=5e-4)
+parser.add_argument('--lr', type=float, default=0.0005) #0.001
+parser.add_argument('--weight_decay', type=float, default=5e-4) #5e-4
 
 parser.add_argument('--seed', type=int, default=1)
 parser.add_argument('--print_feq', type=int, default=10)
