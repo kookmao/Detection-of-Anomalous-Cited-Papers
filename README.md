@@ -11,6 +11,10 @@ This repo covers an reference implementation for the paper "[Anomaly detection i
 * Numpy==1.19.2
 * Networkx==2.5
 * Scikit-learn==0.23.2
+```
+pip install -r requitements.txt
+```
+
 
 ## Usage
 ### Step 0: Prepare Data
