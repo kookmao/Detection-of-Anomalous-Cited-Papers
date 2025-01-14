@@ -97,9 +97,12 @@ def anomaly_generation2(ini_graph_percent, anomaly_percent, data, n, m,seed = 1)
     # The actual generation method used for Netwalk(shown in matlab version)
     # Abort the SpectralClustering
     np.random.seed(seed)
-    print('[%s] generating anomalous dataset...\n'% datetime.datetime.now())
-    print('[%s] initial network edge percent: %.2f, anomaly percent: %.2f.\n'%(datetime.datetime.now(),
-          ini_graph_percent , anomaly_percent ))
+    print('[%s] generating anomalous dataset...\n' % datetime.datetime.now())
+    print('[%s] initial network edge percent: %.2f, anomaly percent: %.2f.\n' % (
+        datetime.datetime.now(),
+        ini_graph_percent,
+        anomaly_percent
+    ))
 
     # ini_graph_percent = 0.5;
     # anomaly_percent = 0.05;

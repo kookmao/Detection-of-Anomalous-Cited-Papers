@@ -22,7 +22,7 @@ class MyConfig(PretrainedConfig):
         initializer_range=0.02,
         layer_norm_eps=1e-12,
         is_decoder=False,
-        batch_size = 256,
+        batch_size = 128,
         window_size = 1,
         weight_decay = 5e-4,
         **kwargs
