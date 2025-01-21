@@ -34,7 +34,6 @@ def preprocessDataset(dataset):
         # Extract only the fromNode and toNode columns and convert to numpy array
         edges = df[['fromNode', 'toNode']].values
 
-    # Reorder nodes in edges
     for ii in range(len(edges)):
         x0 = edges[ii][0]
         x1 = edges[ii][1]
@@ -47,27 +46,13 @@ def preprocessDataset(dataset):
     edges = np.array(edges)
     edges = edges[np.sort(idx)]
 
-    # Get unique vertices and create mapping
-    unique_vertices = np.unique(edges)
-    node_mapping = {original_id: modified_id for modified_id, original_id in enumerate(unique_vertices)}
-    
-    # Create and save the mapping CSV
-    mapping_data = pd.DataFrame({
-        'original_id': list(node_mapping.keys()),
-        'modified_id': list(node_mapping.values())
-    })
-    
-    os.makedirs('data/mappings', exist_ok=True)
-    mapping_data.to_csv(f'data/mappings/{dataset}_node_mapping.csv', index=False)
-
-    # Now modify the edges using the mapping
-    modified_edges = np.array([[node_mapping[edge[0]], node_mapping[edge[1]]] for edge in edges])
-
-    print('vertex:', len(unique_vertices), ' edge: ', len(modified_edges))
+    vertexs, edges = np.unique(edges, return_inverse=True)
+    edges = np.reshape(edges, [-1, 2])
+    print('vertex:', len(vertexs), ' edge: ', len(edges))
     np.savetxt(
         'data/interim/' +
         dataset,
-        X=modified_edges,
+        X=edges,
         delimiter=' ',
         comments='%',
         fmt='%d')
@@ -78,12 +63,6 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     print('Generating data with anomaly for Dataset: ', dataset)
     if not os.path.exists('data/interim/' + dataset):
         preprocessDataset(dataset)
-        
-    # Load the original edge mapping
-    mapping_file = 'data/mappings/' + dataset + '_edge_mapping.pkl'
-    with open(mapping_file, 'rb') as f:
-        edge_data = pickle.load(f)
-        
     edges = np.loadtxt(
         'data/interim/' +
         dataset,
@@ -147,7 +126,7 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     print("Test dataset finish constructing! Time: %.2f s" % (time.time()-t0))
 
     with open('data/percent/' + dataset + '_' + str(train_per) + '_' + str(anomaly_per) + '.pkl', 'wb') as f:
-        pickle.dump((rows, cols, labs, weis, headtail, train_size, test_size, n, m, edge_data), f, pickle.HIGHEST_PROTOCOL)
+        pickle.dump((rows,cols,labs,weis,headtail,train_size,test_size,n,m),f,pickle.HIGHEST_PROTOCOL)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -156,7 +135,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_per', type=float, default=0.5)
     args = parser.parse_args()
 
-    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':2000 } #there are ~2000 avg rows per year (cit-hetpth)
+    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':1000 } #there are ~2000 avg rows per year (cit-hetpth)
 
     if args.anomaly_per is None:
         anomaly_pers = [0.01, 0.05, 0.10]

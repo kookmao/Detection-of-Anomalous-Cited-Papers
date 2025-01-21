@@ -161,9 +161,10 @@ class DynamicDatasetLoader(dataset):
 
     def load(self):
         """Load dynamic network dataset"""
+
         print('Loading {} dataset...'.format(self.dataset_name))
         with open('data/percent/' + self.dataset_name + '_' + str(self.train_per) + '_' + str(self.anomaly_per) + '.pkl', 'rb') as f:
-            rows, cols, labels, weights, headtail, train_size, test_size, nb_nodes, nb_edges, edge_data = pickle.load(f)
+            rows, cols, labels, weights, headtail, train_size, test_size, nb_nodes, nb_edges = pickle.load(f)
 
         degrees = np.array([len(x) for x in headtail])
         num_snap = test_size + train_size
@@ -180,17 +181,6 @@ class DynamicDatasetLoader(dataset):
         index_id_map = {i:i for i in idx}
         idx = np.array(idx)
 
-        return {
-            'X': None, 
-            'A': adjs, 
-            'S': eigen_adjs, 
-            'index_id_map': index_id_map, 
-            'edges': edges,
-            'y': labels, 
-            'idx': idx, 
-            'snap_train': snap_train, 
-            'degrees': degrees,
-            'snap_test': snap_test, 
-            'num_snap': num_snap,
-            'edge_data': edge_data
-        }
+        return {'X': None, 'A': adjs, 'S': eigen_adjs, 'index_id_map': index_id_map, 'edges': edges,
+                'y': labels, 'idx': idx, 'snap_train': snap_train, 'degrees': degrees,
+                'snap_test': snap_test, 'num_snap': num_snap}
