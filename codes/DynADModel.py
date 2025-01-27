@@ -35,17 +35,14 @@ class DynADModel(BertPreTrainedModel):
         self.weight_decay = config.weight_decay
         self.init_weights()
 
-        # Initialize plotting
         self.train_losses = []
-        self.train_aucs = []  # Changed from accuracies to AUCs
+        self.train_aucs = [] 
         
-        # Create figure for plotting
         plt.ion()
         self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(12, 4))
         
-        # Initialize empty lines
         self.line1, = self.ax1.plot([], [], 'b-', label='Loss')
-        self.line2, = self.ax2.plot([], [], 'r-', label='AUC')  # Changed label
+        self.line2, = self.ax2.plot([], [], 'r-', label='AUC') 
         
         # Configure axes
         self.ax1.set_xlabel('Epoch')
@@ -54,14 +51,13 @@ class DynADModel(BertPreTrainedModel):
         self.ax1.legend()
         
         self.ax2.set_xlabel('Epoch')
-        self.ax2.set_ylabel('AUC')  # Changed label
-        self.ax2.set_title('Training AUC')  # Changed title
+        self.ax2.set_ylabel('AUC') 
+        self.ax2.set_title('Training AUC') 
         self.ax2.legend()
         
         plt.tight_layout()
         plt.show()
 
-        # Initialize anomaly tracker
         self.anomaly_tracker = AnomalyTracker(persistence_threshold=0.8)
 
     def update_plots(self, epoch):
@@ -79,13 +75,13 @@ class DynADModel(BertPreTrainedModel):
         self.ax1.set_title('Training Loss')
         
         self.ax2.set_xlabel('Epoch')
-        self.ax2.set_ylabel('AUC')  # Changed label
-        self.ax2.set_title('Training AUC')  # Changed title
+        self.ax2.set_ylabel('AUC')  
+        self.ax2.set_title('Training AUC') 
         
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
         
-        # Save periodic results every 10 epochs
+        # save results every 10 epochs
         if (epoch + 1) % 10 == 0:
             output_dir = f'anomaly_analysis_epoch_{epoch+1}'
             os.makedirs(output_dir, exist_ok=True)
@@ -210,7 +206,7 @@ class DynADModel(BertPreTrainedModel):
                         timestamp=snap
                     )
 
-            # Calculate average loss and AUC
+            #  average loss and AUC calculation
             train_loss = loss_train / len(self.data['snap_train'])
             all_true = np.concatenate(all_true)
             all_pred = np.concatenate(all_pred)

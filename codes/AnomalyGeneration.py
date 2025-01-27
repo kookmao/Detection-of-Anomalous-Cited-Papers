@@ -14,23 +14,17 @@ def anomaly_generation(ini_graph_percent, anomaly_percent, data, n, m, seed = 1)
     # anomaly_percent = 0.05;
     train_num = int(np.floor(ini_graph_percent * m))
 
-    # select part of edges as in the training set
     train = data[0:train_num, :]
-
-    # select the other edges as the testing set
     test = data[train_num:, :]
 
-    #data to adjacency_matrix
+  
     adjacency_matrix = edgeList2Adj(data)
-
-    # clustering nodes to clusters using spectral clustering
     kk = 42 #3#10#42#42
     sc = SpectralClustering(kk, affinity='precomputed', n_init=10, assign_labels = 'discretize',n_jobs=-1)
     labels = sc.fit_predict(adjacency_matrix)
 
 
-    # generate fake edges that are not exist in the whole graph, treat them as
-    # anamalies
+    # generate fake edges that are not exist in the whole graph, treat them as anomalies
     idx_1 = np.expand_dims(np.transpose(np.random.choice(n, m)), axis=1)
     idx_2 = np.expand_dims(np.transpose(np.random.choice(n, m)), axis=1)
     generate_edges = np.concatenate((idx_1, idx_2), axis=1)

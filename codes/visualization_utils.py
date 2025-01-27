@@ -21,7 +21,7 @@ class AnomalyVisualizer:
         """Plot histogram of edges that remain anomalous across multiple snapshots"""
         plt.figure(figsize=(12, 6))
         
-        # Count anomaly occurrences per edge
+        # count anomaly occurrences per edge
         anomaly_counts = {}
         for edge, history in self.edge_history.items():
             anomaly_count = sum(1 for _, is_anomaly in history if is_anomaly)
@@ -89,7 +89,7 @@ class AnomalyVisualizer:
                 axes[i].set_xlabel('Anomaly Score')
                 axes[i].set_ylabel('Count')
         
-        # Hide empty subplots
+        # hide empty subplots
         for j in range(i + 1, len(axes)):
             axes[j].set_visible(False)
             
@@ -101,17 +101,17 @@ class AnomalyVisualizer:
         import os
         os.makedirs(output_dir, exist_ok=True)
         
-        # Save persistent anomalies plot
+        # persistent anomalies plot
         fig = self.plot_persistent_anomalies()
         fig.savefig(f'{output_dir}/persistent_anomalies.png')
         plt.close(fig)
         
-        # Save edge transitions plot
+        # edge transitions plot
         fig = self.plot_edge_transitions()
         fig.savefig(f'{output_dir}/edge_transitions.png')
         plt.close(fig)
         
-        # Save anomaly score distributions
+        # anomaly score distributions
         fig = self.plot_anomaly_score_distributions()
         fig.savefig(f'{output_dir}/anomaly_scores_distribution.png')
         plt.close(fig)

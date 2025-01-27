@@ -4,6 +4,7 @@ import pickle
 import time
 import os
 import argparse
+import pandas as pd
 
 def preprocessDataset(dataset):
     print('Preprocess dataset: ' + dataset)
@@ -27,13 +28,11 @@ def preprocessDataset(dataset):
             file_name = 'data/raw/' + '1993_remapped.csv'
         elif dataset =='five_year':
             file_name = 'data/raw/' + 'five_year.csv'
-        with open(file_name) as f:
-            lines = f.read().splitlines()
-        edges = [[float(r) for r in row.split(',')] for row in lines]
-        edges = np.array(edges)
-        edges = edges[edges[:, 3].argsort()]
-        edges = edges[:, 0:2].astype(dtype=int)
+            
+        df = pd.read_csv(file_name)
+        edges = df[['fromNode', 'toNode']].values
 
+    # Reorder nodes in edges
     for ii in range(len(edges)):
         x0 = edges[ii][0]
         x1 = edges[ii][1]
@@ -46,13 +45,35 @@ def preprocessDataset(dataset):
     edges = np.array(edges)
     edges = edges[np.sort(idx)]
 
-    vertexs, edges = np.unique(edges, return_inverse=True)
-    edges = np.reshape(edges, [-1, 2])
-    print('vertex:', len(vertexs), ' edge: ', len(edges))
+    # get unique vertices and create mapping
+    unique_vertices = np.unique(edges)
+    node_mapping = {original_id: modified_id for modified_id, original_id in enumerate(unique_vertices)}
+    mapping_data = pd.DataFrame({
+        'original_id': list(node_mapping.keys()),
+        'modified_id': list(node_mapping.values())
+    })
+    
+    os.makedirs('data/mappings', exist_ok=True)
+    mapping_data.to_csv(f'data/mappings/{dataset}_node_mapping.csv', index=False)
+    modified_edges = np.array([[node_mapping[edge[0]], node_mapping[edge[1]]] for edge in edges])
+
+    # Create edge mapping
+    edge_mapping = {}
+    for i, edge in enumerate(modified_edges):
+        edge_mapping[tuple(edge)] = (edge[0], edge[1])
+    
+    # Save edge mapping
+    mapping_file = f'data/mappings/{dataset}_edge_mapping.pkl'
+    with open(mapping_file, 'wb') as f:
+        pickle.dump({'edge_mapping': edge_mapping}, f)
+    
+    print('Edge mapping saved to:', mapping_file)
+
+    print('vertex:', len(unique_vertices), ' edge: ', len(modified_edges))
     np.savetxt(
         'data/interim/' +
         dataset,
-        X=edges,
+        X=modified_edges,
         delimiter=' ',
         comments='%',
         fmt='%d')
@@ -61,8 +82,14 @@ def preprocessDataset(dataset):
 
 def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     print('Generating data with anomaly for Dataset: ', dataset)
-    if not os.path.exists('data/interim/' + dataset):
-        preprocessDataset(dataset)
+    
+    preprocessDataset(dataset)
+        
+    # Load edge mapping after preprocessing
+    mapping_file = 'data/mappings/' + dataset + '_edge_mapping.pkl'
+    with open(mapping_file, 'rb') as f:
+        edge_data = pickle.load(f)
+        
     edges = np.loadtxt(
         'data/interim/' +
         dataset,
@@ -106,7 +133,7 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
         weis.append(wei)
         labs.append(lab)
 
-    print("Training dataset contruction finish! Time: %.2f s" % (time.time()-t0))
+    print("Training dataset construction finish! Time: %.2f s" % (time.time()-t0))
     t0 = time.time()
 
     for i in range(test_size):
@@ -125,8 +152,11 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
 
     print("Test dataset finish constructing! Time: %.2f s" % (time.time()-t0))
 
+    # Make sure the output directory exists
+    os.makedirs('data/percent', exist_ok=True)
+
     with open('data/percent/' + dataset + '_' + str(train_per) + '_' + str(anomaly_per) + '.pkl', 'wb') as f:
-        pickle.dump((rows,cols,labs,weis,headtail,train_size,test_size,n,m),f,pickle.HIGHEST_PROTOCOL)
+        pickle.dump((rows, cols, labs, weis, headtail, train_size, test_size, n, m, edge_data), f, pickle.HIGHEST_PROTOCOL)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -135,7 +165,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_per', type=float, default=0.5)
     args = parser.parse_args()
 
-    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':2000 } #there are ~2000 avg rows per year (cit-hetpth)
+    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':2000}
 
     if args.anomaly_per is None:
         anomaly_pers = [0.01, 0.05, 0.10]
