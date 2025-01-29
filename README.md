@@ -1,5 +1,5 @@
 # CITAD: Detecting Anomalously Cited Papers using Anomaly Detection in Dynamic Graphs via Transformer 
-This repo covers an reference implementation for the paper:
+This repo covers a reference implementation for the paper:
 "[Anomaly detection in dynamic graphs via transformer(TADDY).](https://arxiv.org/pdf/2106.09876.pdf)"
 
 ## Requirments
