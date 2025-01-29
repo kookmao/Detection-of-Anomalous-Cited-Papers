@@ -57,9 +57,9 @@ condacolab.install()
 ## Prepare Data:
 
 ```
-!conda run -n myenv --live-stream python 0_prepare_data.py --dataset year_1993 --anomaly_per 0.1
+!conda run -n myenv --live-stream python 0_prepare_data.py --dataset five_year --anomaly_per 0.1
 ```
 ## Train Data:
 ```
-!conda run -n myenv --live-stream python 1_train.py --dataset year_1993 --anomaly_per 0.1
+!conda run -n myenv --live-stream python 1_train.py --dataset five_year --anomaly_per 0.1
 ```
