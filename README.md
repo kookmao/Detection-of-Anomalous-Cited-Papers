@@ -3,8 +3,10 @@ This repo covers a reference implementation for the paper:
 "[Anomaly detection in dynamic graphs via transformer(TADDY).](https://arxiv.org/pdf/2106.09876.pdf)"
 ![poster](poster.PNG)
 
-[![Video](https://img.youtube.com/vi/tp8dzmwEGlw/hqdefault.jpg)](https://youtu.be/tp8dzmwEGlw)
 
+<p align="center">
+[![Video](https://img.youtube.com/vi/tp8dzmwEGlw/hqdefault.jpg)](https://youtu.be/tp8dzmwEGlw)
+</p>
 ## Requirments
 * Python==3.8
 * PyTorch==1.7.1
