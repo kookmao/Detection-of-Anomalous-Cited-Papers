@@ -1,7 +1,14 @@
+import os
+os.environ["TRANSFORMERS_DISABLE_ONNX"] = "1"
 import torch
 import torch.nn as nn
-from transformers.modeling_bert import BertAttention, BertIntermediate, BertOutput
-from transformers.configuration_utils import PretrainedConfig
+from transformers.models.bert.modeling_bert import (
+    BertAttention,
+    BertIntermediate, 
+    BertOutput,
+    BertPreTrainedModel  # Add this
+)
+from transformers import PretrainedConfig
 
 TransformerLayerNorm = torch.nn.LayerNorm
 
@@ -79,24 +86,25 @@ class EdgeEncoding(nn.Module):
     def __init__(self, config):
         super(EdgeEncoding, self).__init__()
         self.config = config
-
         self.inti_pos_embeddings = nn.Embedding(config.max_inti_pos_index, config.hidden_size)
         self.hop_dis_embeddings = nn.Embedding(config.max_hop_dis_index, config.hidden_size)
         self.time_dis_embeddings = nn.Embedding(config.max_hop_dis_index, config.hidden_size)
-
-        # Add input dropout layer
-        self.input_dropout = nn.Dropout(0.2)  # This is the critical addition
+        self.input_dropout = nn.Dropout(0.2)
         self.LayerNorm = TransformerLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, init_pos_ids=None, hop_dis_ids=None, time_dis_ids=None):
-
+        # Ensure input tensors have correct dimensions
+        init_pos_ids = init_pos_ids.long()
+        hop_dis_ids = hop_dis_ids.long()
+        time_dis_ids = time_dis_ids.long()
+        
         position_embeddings = self.inti_pos_embeddings(init_pos_ids)
         hop_embeddings = self.hop_dis_embeddings(hop_dis_ids)
-        time_embeddings = self.hop_dis_embeddings(time_dis_ids)
-
+        time_embeddings = self.time_dis_embeddings(time_dis_ids)
+        
         embeddings = position_embeddings + hop_embeddings + time_embeddings
-        embeddings = self.input_dropout(embeddings)  # Apply input dropout
+        embeddings = self.input_dropout(embeddings)
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings

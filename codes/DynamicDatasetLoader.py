@@ -5,6 +5,7 @@ import scipy.sparse as sp
 from numpy.linalg import inv
 import pickle
 import os
+#import pyarrow.csv as pa
 
 
 class DynamicDatasetLoader(dataset):
@@ -19,9 +20,11 @@ class DynamicDatasetLoader(dataset):
     compute_s = False
     anomaly_per = 0.1
     train_per = 0.5
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Add this line
 
     def __init__(self, seed=None, dName=None, dDescription=None):
         super(DynamicDatasetLoader, self).__init__(dName, dDescription)
+        
 
     def load_hop_wl_batch(self):  #load the "raw" WL/Hop/Batch dict
         print('Load WL Dictionary')
@@ -42,20 +45,16 @@ class DynamicDatasetLoader(dataset):
         return hop_dict, wl_dict, batch_dict
 
     def normalize(self, mx):
-        """Row-normalize sparse matrix"""
-        rowsum = np.array(mx.sum(1))
-        r_inv = np.power(rowsum, -1).flatten() + + 1e-6
-        r_inv[np.isinf(r_inv)] = 0.
+        """Row-normalize sparse matrix with epsilon"""
+        rowsum = np.array(mx.sum(1)) + 1e-6  # Avoid division by zero
+        r_inv = np.power(rowsum, -1).flatten()
         r_mat_inv = sp.diags(r_inv)
-        mx = r_mat_inv.dot(mx)
-        return mx
+        return r_mat_inv.dot(mx)
 
     def normalize_adj(self, adj):
-        """Symmetrically normalize adjacency matrix. (0226)"""
-        adj = sp.coo_matrix(adj)
-        rowsum = np.array(adj.sum(1)) + 1e-6
+        """Symmetrically normalize adjacency matrix with epsilon"""
+        rowsum = np.array(adj.sum(1)) + 1e-6  # Avoid division by zero
         d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-        d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
         d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
         return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
 
@@ -114,7 +113,7 @@ class DynamicDatasetLoader(dataset):
         adj = adj + adj.T.multiply(adj.T > adj) - adj.multiply(adj.T > adj)
         # adj_np = np.array(adj.todense())
         adj_normalized = self.normalize_adj(adj + sp.eye(adj.shape[0]))
-        adj_normalized = self.sparse_mx_to_torch_sparse_tensor(adj_normalized)
+        adj_normalized = self.sparse_mx_to_torch_sparse_tensor(adj_normalized).to(self.device)
         return adj_normalized
 
     def get_adjs(self, rows, cols, weights, nb_nodes):
@@ -138,7 +137,7 @@ class DynamicDatasetLoader(dataset):
             eigen_adjs_sparse = []
 
         for i in range(len(rows)):
-            adj = sp.csr_matrix((weights[i], (rows[i], cols[i])), shape=(nb_nodes, nb_nodes), dtype=np.float32)
+            adj = sp.csr_matrix((weights[i], (rows[i], cols[i])), shape=(nb_nodes, nb_nodes), dtype=np.float32).tocoo()
             adjs.append(self.preprocess_adj(adj))
             if self.compute_s:
                 if generate_eigen:
@@ -178,6 +177,7 @@ class DynamicDatasetLoader(dataset):
         idx = list(range(nb_nodes))
         index_id_map = {i:i for i in idx}
         idx = np.array(idx)
+        
 
         return {
             'X': None, 

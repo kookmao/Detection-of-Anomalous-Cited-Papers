@@ -1,5 +1,5 @@
 import torch
-from transformers.modeling_bert import BertPreTrainedModel, BertPooler
+from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertPooler
 from codes.Component import EdgeEncoding, TransformerEncoder
 
 
