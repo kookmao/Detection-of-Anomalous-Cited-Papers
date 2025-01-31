@@ -57,9 +57,13 @@ class AnomalyTracker:
 
     def track_snapshot(self, edges, scores, true_labels, timestamp):
         """Track a single snapshot's worth of anomaly data"""
-        auc_score = metrics.roc_auc_score(true_labels, scores)
-        self.timestamp_aucs[timestamp] = auc_score
-        
+        # Try to calculate AUC only if we have both classes
+        if len(np.unique(true_labels)) > 1:
+            auc_score = metrics.roc_auc_score(true_labels, scores)
+            self.timestamp_aucs[timestamp] = auc_score
+        else:
+            self.timestamp_aucs[timestamp] = None
+            
         self.timestamp_scores[timestamp] = scores.tolist()
         
         for idx, (edge, score, label) in enumerate(zip(edges, scores, true_labels)):
@@ -84,7 +88,7 @@ class AnomalyTracker:
                         'old_state': 'anomalous' if prev_state else 'normal',
                         'new_state': 'anomalous' if is_anomaly else 'normal',
                         'score': score,
-                        'auc': auc_score
+                        'auc': self.timestamp_aucs[timestamp]
                     })
             
             self.edge_history[edge_id].append((timestamp, is_anomaly))
@@ -95,8 +99,10 @@ class AnomalyTracker:
     def analyze_score_variations(self):
         """Calculate standard deviations for all edge scores"""
         for edge_id, scores in self.edge_score_series.items():
-            if len(scores) > 1:  #at least 2 points for std dev
+            if len(scores) > 1:  # Need at least 2 points for std dev
                 self.edge_std_devs[edge_id] = np.std(scores)
+            elif len(scores) == 1:  # Handle single-point case
+                self.edge_std_devs[edge_id] = 0.0  # No variation for single point
     
     def get_high_variance_edges(self) -> List[Tuple[str, float]]:
         """Get edges with standard deviation above the threshold"""
@@ -114,7 +120,9 @@ class AnomalyTracker:
         for edge_id, std_dev in high_var_edges:
             original_edge_id = self.get_original_edge_id(edge_id)
             from_node = original_edge_id.split('-')[0]
-            if from_node in self.valid_nodes:  # include edges with valid nodes
+            if hasattr(self, 'valid_nodes') and from_node in self.valid_nodes:
+                edges_to_plot.append((original_edge_id, std_dev))
+            elif not hasattr(self, 'valid_nodes'):
                 edges_to_plot.append((original_edge_id, std_dev))
             if len(edges_to_plot) >= top_n:
                 break
@@ -130,6 +138,9 @@ class AnomalyTracker:
             scores = self.edge_score_series[edge_id]
             ts = self.edge_timestamps[edge_id]
             
+            if not scores or not ts:
+                continue
+                
             combined = sorted(zip(ts, scores), key=lambda x: x[0])
             sorted_ts = [c[0] for c in combined]
             sorted_scores = [c[1] for c in combined]
@@ -141,12 +152,15 @@ class AnomalyTracker:
                 variations.append(diff)
                 variation_ts.append(sorted_ts[j])
 
-            source_node = edge_id.split('-')[0]
-            paper_title = self.paper_titles.get(source_node, '')
-            if not paper_title:
-                plot_title = f"Edge {edge_id} (No title found)"
+            if hasattr(self, 'paper_titles'):
+                source_node = edge_id.split('-')[0]
+                paper_title = self.paper_titles.get(source_node, '')
+                if not paper_title:
+                    plot_title = f"Edge {edge_id} (No title found)"
+                else:
+                    plot_title = f"{paper_title}\n(Edge {edge_id})"
             else:
-                plot_title = f"{paper_title}\n(Edge {edge_id})"
+                plot_title = f"Edge {edge_id}"
 
             plt.figure(figsize=(8, 4))
             plt.plot(variation_ts, variations, marker='o', linestyle='-',
@@ -173,6 +187,8 @@ class AnomalyTracker:
             plt.close()
 
             print(f"Saved variation plot for edge {edge_id} (std_dev={std_dev:.3f}) to {plot_path}")
+
+
     def save_edge_score_history(self, output_dir: str):
         """Save the complete history of anomaly scores for each edge across all timestamps.
         
@@ -298,8 +314,15 @@ class AnomalyTracker:
         for timestamp, scores in self.timestamp_scores.items():
             plt.figure(figsize=(10, 6))
             sns.histplot(scores, bins='auto')
-            auc = self.timestamp_aucs.get(timestamp, 'N/A')
-            plt.title(f'Anomaly Score Distribution - Timestamp {timestamp}\nAUC: {auc:.4f}')
+            
+            # Get AUC value and handle None case
+            auc = self.timestamp_aucs.get(timestamp)
+            if auc is None:
+                title = f'Anomaly Score Distribution - Timestamp {timestamp}\nAUC: N/A (insufficient classes)'
+            else:
+                title = f'Anomaly Score Distribution - Timestamp {timestamp}\nAUC: {auc:.4f}'
+                
+            plt.title(title)
             plt.xlabel('Anomaly Score')
             plt.ylabel('Count')
             plt.tight_layout()

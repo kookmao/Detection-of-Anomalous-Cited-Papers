@@ -17,12 +17,12 @@ class MyConfig(PretrainedConfig):
         num_attention_heads=1,
         intermediate_size=32,
         hidden_act="gelu",
-        hidden_dropout_prob=0.5,
-        attention_probs_dropout_prob=0.3,
+        hidden_dropout_prob=0.5, #0.5 default
+        attention_probs_dropout_prob=0.3, # 0.3 default
         initializer_range=0.02,
         layer_norm_eps=1e-12,
         is_decoder=False,
-        batch_size = 128,
+        batch_size = 64,
         window_size = 1,
         weight_decay = 5e-4,
         **kwargs
@@ -84,6 +84,8 @@ class EdgeEncoding(nn.Module):
         self.hop_dis_embeddings = nn.Embedding(config.max_hop_dis_index, config.hidden_size)
         self.time_dis_embeddings = nn.Embedding(config.max_hop_dis_index, config.hidden_size)
 
+        # Add input dropout layer
+        self.input_dropout = nn.Dropout(0.2)  # This is the critical addition
         self.LayerNorm = TransformerLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -94,6 +96,7 @@ class EdgeEncoding(nn.Module):
         time_embeddings = self.hop_dis_embeddings(time_dis_ids)
 
         embeddings = position_embeddings + hop_embeddings + time_embeddings
+        embeddings = self.input_dropout(embeddings)  # Apply input dropout
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
