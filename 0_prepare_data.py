@@ -158,14 +158,16 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     with open('data/percent/' + dataset + '_' + str(train_per) + '_' + str(anomaly_per) + '.pkl', 'wb') as f:
         pickle.dump((rows, cols, labs, weis, headtail, train_size, test_size, n, m, edge_data), f, pickle.HIGHEST_PROTOCOL)
 
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, choices=['uci', 'digg', 'btc_alpha', 'btc_otc','year_1992','year_1993','five_year'], default='uci')
-    parser.add_argument('--anomaly_per' ,choices=[0.01, 0.05, 0.1] , type=float, default=None)
+    parser.add_argument('--anomaly_per' ,choices=[0.01, 0.05, 0.1,0.2] , type=float, default=None)
     parser.add_argument('--train_per', type=float, default=0.5)
     args = parser.parse_args()
 
-    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':2000}
+    snap_size_dict = {'uci':1000, 'digg':6000, 'btc_alpha':1000, 'btc_otc':2000,'year_1992':300,'year_1993':300,'five_year':4000}
 
     if args.anomaly_per is None:
         anomaly_pers = [0.01, 0.05, 0.10]
@@ -174,3 +176,4 @@ if __name__ == '__main__':
 
     for anomaly_per in anomaly_pers:
         generateDataset(args.dataset, snap_size_dict[args.dataset], train_per=args.train_per, anomaly_per=anomaly_per)
+   
