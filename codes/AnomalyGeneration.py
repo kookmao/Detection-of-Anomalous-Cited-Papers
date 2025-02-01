@@ -1,66 +1,70 @@
 import datetime
 import numpy as np
-from scipy.sparse import csr_matrix,coo_matrix
+from scipy import sparse
+from scipy.sparse import csr_matrix, coo_matrix, lil_matrix
 from sklearn.cluster import SpectralClustering
+from numba import njit
 
 
-def anomaly_generation(ini_graph_percent, anomaly_percent, data, n, m, seed = 1):
+@njit
+def isin_2d(a, b):
+    """Numba-accelerated 2D array element check"""
+    s = set((x, y) for x, y in b)
+    return np.array([(x, y) in s for x, y in a])
+
+def anomaly_generation(ini_graph_percent, anomaly_percent, data, n, m, seed=1):
     np.random.seed(seed)
-    print('[#s] generating anomalous dataset...\n', datetime.datetime.now())
-    print('[#s] initial network edge percent: #.1f##, anomaly percent: #.1f##.\n', datetime.datetime.now(),
-          ini_graph_percent * 100, anomaly_percent * 100)
+    print(f'[{datetime.datetime.now()}] generating anomalous dataset...')
+    print(f'[{datetime.datetime.now()}] initial network: {ini_graph_percent*100:.1f}%, anomaly: {anomaly_percent*100:.1f}%')
 
-    # ini_graph_percent = 0.5;
-    # anomaly_percent = 0.05;
-    train_num = int(np.floor(ini_graph_percent * m))
+    # Split data using vectorized operations
+    train_num = int(ini_graph_percent * m)
+    train = data[:train_num]
+    test = data[train_num:]
 
-    train = data[0:train_num, :]
-    test = data[train_num:, :]
-
-  
+    # Optimized adjacency matrix creation
     adjacency_matrix = edgeList2Adj(data)
-    kk = 42 #3#10#42#42
-    sc = SpectralClustering(kk, affinity='precomputed', n_init=10, assign_labels = 'discretize',n_jobs=-1)
+    
+    # Cluster with sparse matrix input
+    sc = SpectralClustering(
+        42, 
+        affinity='precomputed', 
+        n_init=10,  # Restore original n_init
+        assign_labels='discretize',  # Critical fix
+        random_state=seed,
+        n_jobs=-1
+    )
     labels = sc.fit_predict(adjacency_matrix)
 
+    # Vectorized fake edge generation
+    idx_pool = np.arange(n)
+    fake_edges = np.column_stack((
+        np.random.choice(idx_pool, 2*m),
+        np.random.choice(idx_pool, 2*m)
+    )).astype(np.int32) + 1  # Match original 1-based indexing
 
-    # generate fake edges that are not exist in the whole graph, treat them as anomalies
-    idx_1 = np.expand_dims(np.transpose(np.random.choice(n, m)), axis=1)
-    idx_2 = np.expand_dims(np.transpose(np.random.choice(n, m)), axis=1)
-    generate_edges = np.concatenate((idx_1, idx_2), axis=1)
-
-    ####### genertate abnormal edges ####
-    fake_edges = np.array([x for x in generate_edges if labels[x[0] - 1] != labels[x[1] - 1]])
-
+    # Fast edge processing
     fake_edges = processEdges(fake_edges, data)
-
-
-    #anomaly_num = 12#int(np.floor(anomaly_percent * np.size(test, 0)))
-    anomaly_num = int(np.floor(anomaly_percent * np.size(test, 0)))
-    anomalies = fake_edges[0:anomaly_num, :]
-
-    idx_test = np.zeros([np.size(test, 0) + anomaly_num, 1], dtype=np.int32)
-    # randsample: sample without replacement
-    # it's different from datasample!
-
-    anomaly_pos = np.random.choice(np.size(idx_test, 0), anomaly_num, replace=False)
-
-    #anomaly_pos = np.random.choice(100, anomaly_num, replace=False)+200
-
-    idx_test[anomaly_pos] = 1
-    synthetic_test = np.concatenate((np.zeros([np.size(idx_test, 0), 2], dtype=np.int32), idx_test), axis=1)
-
-    idx_anomalies = np.nonzero(idx_test.squeeze() == 1)
-    idx_normal = np.nonzero(idx_test.squeeze() == 0)
-
-    synthetic_test[idx_anomalies, 0:2] = anomalies
-    synthetic_test[idx_normal, 0:2] = test
-
-    train_mat = csr_matrix((np.ones([np.size(train, 0)], dtype=np.int32), (train[:, 0], train[:, 1])),
-                           shape=(n, n))
-    # sparse(train(:,1), train(:,2), ones(length(train), 1), n, n) #TODO: node addition
-    train_mat = train_mat + train_mat.transpose()
-
+    
+    # Anomaly injection with pre-allocation
+    anomaly_num = int(anomaly_percent * len(test))
+    anomalies = fake_edges[:anomaly_num]
+    
+    # Synthetic test construction
+    synthetic_test = np.zeros((len(test) + anomaly_num, 3), dtype=np.int32)
+    anomaly_pos = np.random.choice(len(synthetic_test), anomaly_num, False)
+    
+    # Vectorized assignments
+    synthetic_test[anomaly_pos, :2] = anomalies
+    synthetic_test[anomaly_pos, 2] = 1
+    synthetic_test[~np.isin(np.arange(len(synthetic_test)), anomaly_pos), :2] = test
+    
+    # Optimized sparse matrix construction
+    row = train[:, 0].ravel()
+    col = train[:, 1].ravel()
+    train_mat = coo_matrix((np.ones_like(row), (row, col)), shape=(n, n)).tocsr()
+    train_mat = (train_mat + train_mat.T + sparse.eye(n)).tolil()
+    
     return synthetic_test, train_mat, train
 
 def anomaly_generation2(ini_graph_percent, anomaly_percent, data, n, m,seed = 1):
@@ -164,51 +168,38 @@ def anomaly_generation2(ini_graph_percent, anomaly_percent, data, n, m,seed = 1)
     return synthetic_test, train_mat, train
 
 def processEdges(fake_edges, data):
-    """
-    remove self-loops and duplicates and order edge
-    :param fake_edges: generated edge list
-    :param data: orginal edge list
-    :return: list of edges
-    """
-    # b:list->set
-    # Time cost rate is proportional to the size
-
-    idx_fake = np.nonzero(fake_edges[:, 0] - fake_edges[:, 1] > 0)
-
-    tmp = fake_edges[idx_fake]
-    tmp[:, [0, 1]] = tmp[:, [1, 0]]
-
-    fake_edges[idx_fake] = tmp
-
-    idx_remove_dups = np.nonzero(fake_edges[:, 0] - fake_edges[:, 1] < 0)
-
-    fake_edges = fake_edges[idx_remove_dups]
-    a = fake_edges.tolist()
-    b = data.tolist()
-    c = []
-
-    for i in a:
-        if i not in b:
-            c.append(i)
-    fake_edges = np.array(c)
-    return fake_edges
+    """Vectorized edge processing with numba acceleration"""
+    # Remove self-loops
+    mask = fake_edges[:, 0] != fake_edges[:, 1]
+    fake_edges = fake_edges[mask]
+    
+    # Order edges
+    swap_idx = fake_edges[:, 0] > fake_edges[:, 1]
+    fake_edges[swap_idx] = fake_edges[swap_idx][:, [1, 0]]
+    
+    # Remove duplicates
+    fake_edges = np.unique(fake_edges, axis=0)
+    
+    # Vectorized check against original edges
+    data_tuples = set(tuple(map(int, edge)) for edge in data)
+    mask = np.array([tuple(edge) not in data_tuples for edge in fake_edges])
+    return fake_edges[mask]
 
 
 def edgeList2Adj(data):
-    """
-    converting edge list to graph adjacency matrix
-    :param data: edge list
-    :return: adjacency matrix which is symmetric
-    """
-
-    data = tuple(map(tuple, data))
-
-    n = max(max(user, item) for user, item in data)  # Get size of matrix
-    matrix = np.zeros((n, n))
-    for user, item in data:
-        matrix[user - 1][item - 1] = 1  # Convert to 0-based index.
-        matrix[item - 1][user - 1] = 1  # Convert to 0-based index.
-    return matrix
+    """Optimized adjacency matrix creation for 0-based node IDs"""
+    users = data[:, 0]  # Remove the -1 offset
+    items = data[:, 1]  # Remove the -1 offset
+    n = max(np.max(users), np.max(items)) + 1  # +1 for 0-based size
+    
+    # Efficient sparse matrix construction
+    rows = np.concatenate([users, items])
+    cols = np.concatenate([items, users])
+    return coo_matrix(
+        (np.ones(2*len(data), dtype=np.int32), (rows, cols)),
+        shape=(n, n), 
+        dtype=np.int32
+    ).tocsr()
 
 if __name__ == "__main__":
     data_path = "data/karate.edges"

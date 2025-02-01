@@ -17,7 +17,7 @@ from codes.utils import dicts_to_embeddings, compute_batch_hop, compute_zero_WL
 from codes.visualization_utils import AnomalyVisualizer
 from anomaly_tracking_utils import AnomalyTracker
 from torch.cuda.amp import GradScaler, autocast
-from timing_utils import TimingContext, print_tensor_device
+#from timing_utils import TimingContext, print_tensor_device
 import torch_geometric
 from torch_geometric.utils import k_hop_subgraph
 
@@ -201,16 +201,13 @@ class DynADModel(BertPreTrainedModel):
     #     return test_auc
 
     def evaluate_test_set(self):
-        """Evaluate model on test set with timing diagnostics"""
-        eval_start = time.time()
         self.eval()
         all_true = []
         all_pred = []
         
-        with TimingContext("Test set embedding generation"):
-            raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
-                self.generate_embedding([self.data['edges'][snap] for snap in self.data['snap_test']])
-            print_tensor_device(int_embeddings, "Test int_embeddings")
+        # Removed TimingContext
+        raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
+            self.generate_embedding([self.data['edges'][snap] for snap in self.data['snap_test']])
 
         device = next(self.parameters()).device
         
@@ -218,21 +215,19 @@ class DynADModel(BertPreTrainedModel):
             if int_embeddings[idx] is None:
                 continue
                 
-            with TimingContext(f"Processing test snapshot {snap}"):
-                test_edges = self.data['edges'][snap]
-                test_labels = self.data['y'][snap]
-                print_tensor_device(test_labels, "Test labels")
+            test_edges = self.data['edges'][snap]
+            test_labels = self.data['y'][snap]
+            
+            with torch.no_grad():
+                int_embed = int_embeddings[idx].to(device)
+                hop_embed = hop_embeddings[idx].to(device)
+                time_embed = time_embeddings[idx].to(device)
                 
-                with torch.no_grad():
-                    int_embed = int_embeddings[idx].to(device)
-                    hop_embed = hop_embeddings[idx].to(device)
-                    time_embed = time_embeddings[idx].to(device)
-                    
-                    output = self.forward(int_embed, hop_embed, time_embed).squeeze()
-                    pred_scores = torch.sigmoid(output).cpu().numpy()
-                
-                all_true.append(test_labels.cpu().numpy())
-                all_pred.append(pred_scores)
+                output = self.forward(int_embed, hop_embed, time_embed).squeeze()
+                pred_scores = torch.sigmoid(output).cpu().numpy()
+            
+            all_true.append(test_labels.cpu().numpy())
+            all_pred.append(pred_scores)
         
         if len(all_true) == 0:
             print("No test samples processed")
@@ -242,7 +237,6 @@ class DynADModel(BertPreTrainedModel):
         all_pred = np.concatenate(all_pred)
         test_auc = metrics.roc_auc_score(all_true, all_pred)
         
-        print(f"Total evaluation time: {time.time() - eval_start:.4f} seconds")
         return test_auc
 
     def update_plots(self, epoch):
@@ -329,32 +323,27 @@ class DynADModel(BertPreTrainedModel):
         return aucs, auc_full, predicted_labels
             
     def generate_embedding(self, edges):
-        """Cached version of generate_embedding"""
-        print("\nDetailed embedding generation profiling:")
-        total_start = time.time()
         edges_tuple = tuple(tuple(e.tolist() if isinstance(e, torch.Tensor) else e) for e in edges)
 
         num_snap = len(edges)
         
         # Edge processing
-        edge_start = time.time()
         edges_cpu = []
         for e in edges_tuple[:7]:
             if isinstance(e, torch.Tensor):
                 edges_cpu.append(e.cpu().numpy())
             else:
                 edges_cpu.append(e)
-        edge_time = time.time() - edge_start
-        print(f"Edge processing: {edge_time:.4f}s")
+        
         
         # WL Dict computation
-        wl_start = time.time()
+        
         WL_dict = compute_zero_WL(self.data['idx'], np.vstack(edges_cpu))
-        wl_time = time.time() - wl_start
-        print(f"WL Dict computation: {wl_time:.4f}s")
+       
+        
         
         # Use GPU-optimized batch hop computation
-        hop_start = time.time()
+        
         batch_hop_dicts = compute_batch_hop_gpu(
             self.data['idx'], 
             edges, 
@@ -363,11 +352,9 @@ class DynADModel(BertPreTrainedModel):
             self.config.k, 
             self.config.window_size
         )
-        hop_time = time.time() - hop_start
-        print(f"Batch hop computation: {hop_time:.4f}s")
         
         # Final embeddings
-        embed_start = time.time()
+        
         device = next(self.parameters()).device
 
         raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
@@ -381,11 +368,9 @@ class DynADModel(BertPreTrainedModel):
                 device=device
             )
 
-        embed_time = time.time() - embed_start
-        print(f"Final embeddings: {embed_time:.4f}s")
         
-        total_time = time.time() - total_start
-        print(f"Total embedding generation: {total_time:.4f}s")
+        
+        
         
         return raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings
 
@@ -559,33 +544,28 @@ class DynADModel(BertPreTrainedModel):
     #     return self.learning_record_dict
 
     def train_model(self, max_epoch):
-        print("\n=== Starting Training With Timing and Device Diagnostics ===")
+        print("\n=== Starting Training ===")
         device = next(self.parameters()).device
         print(f"Training on device: {device}")
         
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scaler = GradScaler()
         
-        with TimingContext("Initial embedding generation"):
-            raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
-                self.generate_embedding(self.data['edges'])
-            print_tensor_device(int_embeddings, "int_embeddings")
-            print_tensor_device(hop_embeddings, "hop_embeddings")
-            print_tensor_device(time_embeddings, "time_embeddings")
+        # Removed TimingContext
+        raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
+            self.generate_embedding(self.data['edges'])
         
         self.data['raw_embeddings'] = None
         
         for epoch in range(max_epoch):
             epoch_start = time.time()
             
-            with TimingContext("Negative sampling"):
-                negatives = self.negative_sampling(self.data['edges'][:max(self.data['snap_train']) + 1])
-                print(f"Generated {len(negatives)} negative samples")
+            # Removed TimingContext
+            negatives = self.negative_sampling(self.data['edges'][:max(self.data['snap_train']) + 1])
             
-            with TimingContext("Negative embedding generation"):
-                _, _, hop_embeddings_neg, int_embeddings_neg, time_embeddings_neg = \
-                    self.generate_embedding(negatives)
-                print_tensor_device(int_embeddings_neg, "int_embeddings_neg")
+            # Removed TimingContext
+            _, _, hop_embeddings_neg, int_embeddings_neg, time_embeddings_neg = \
+                self.generate_embedding(negatives)
             
             self.train()
             loss_train = 0
@@ -594,46 +574,42 @@ class DynADModel(BertPreTrainedModel):
             
             batch_times = []
             for snap in self.data['snap_train']:
-                # Remove wl_embeddings check since we're not using it
-                if int_embeddings[snap] is None:  # Changed from wl_embeddings
+                if int_embeddings[snap] is None:
                     continue
                     
                 batch_start = time.time()
                 
-                with TimingContext(f"Data preparation for snap {snap}"):
-                    int_embedding = torch.vstack((int_embeddings[snap], int_embeddings_neg[snap])).to(device)
-                    hop_embedding = torch.vstack((hop_embeddings[snap], hop_embeddings_neg[snap])).to(device)
-                    time_embedding = torch.vstack((time_embeddings[snap], time_embeddings_neg[snap])).to(device)
-                    y = torch.hstack((self.data['y'][snap].float(), 
-                                    torch.ones(int_embeddings_neg[snap].size()[0]))).to(device)
-                    print_tensor_device(int_embedding, "Combined int_embedding")
+                # Data preparation
+                int_embedding = torch.vstack((int_embeddings[snap], int_embeddings_neg[snap])).to(device)
+                hop_embedding = torch.vstack((hop_embeddings[snap], hop_embeddings_neg[snap])).to(device)
+                time_embedding = torch.vstack((time_embeddings[snap], time_embeddings_neg[snap])).to(device)
+                y = torch.hstack((self.data['y'][snap].float(), 
+                                torch.ones(int_embeddings_neg[snap].size()[0]))).to(device)
                 
                 optimizer.zero_grad()
                 
-                with TimingContext("Forward pass"):
-                    with autocast():
-                        output = self.forward(int_embedding, hop_embedding, time_embedding).squeeze()
-                        loss = F.binary_cross_entropy_with_logits(output, y)
-                    print_tensor_device(output, "Model output")
+                # Forward pass
+                with autocast():
+                    output = self.forward(int_embedding, hop_embedding, time_embedding).squeeze()
+                    loss = F.binary_cross_entropy_with_logits(output, y)
                 
-                with TimingContext("Backward pass"):
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
+                # Backward pass
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 
-                with TimingContext("Metrics calculation"):
-                    loss_train += loss.item()
-                    pred_scores = torch.sigmoid(output).detach().cpu().numpy()
-                    true_labels = y.detach().cpu().numpy()
-                    all_true.append(true_labels)
-                    all_pred.append(pred_scores)
+                # Metrics
+                loss_train += loss.item()
+                pred_scores = torch.sigmoid(output).detach().cpu().numpy()
+                true_labels = y.detach().cpu().numpy()
+                all_true.append(true_labels)
+                all_pred.append(pred_scores)
                 
                 batch_time = time.time() - batch_start
                 batch_times.append(batch_time)
-                print(f"Batch for snap {snap} took {batch_time:.4f} seconds")
             
-            with TimingContext("Test evaluation"):
-                test_auc = self.evaluate_test_set()
+            # Test evaluation
+            test_auc = self.evaluate_test_set()
             
             # Calculate epoch metrics
             train_loss = loss_train / len(self.data['snap_train'])
@@ -646,13 +622,7 @@ class DynADModel(BertPreTrainedModel):
             self.test_aucs.append(test_auc)
             
             avg_batch_time = np.mean(batch_times)
-            print(f'Epoch: {epoch + 1}')
-            print(f'Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, Test AUC: {test_auc:.4f}')
-            print(f'Total Time: {time.time() - epoch_start:.4f}s')
-            print(f'Average Batch Time: {avg_batch_time:.4f}s')
-            if torch.cuda.is_available():
-                print(f'GPU Memory Allocated: {torch.cuda.memory_allocated()/1024**2:.1f}MB')
-                print(f'GPU Memory Cached: {torch.cuda.memory_reserved()/1024**2:.1f}MB')
+            print(f'Epoch: {epoch + 1}, Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, Test AUC: {test_auc:.4f}, Total Time: {time.time() - epoch_start:.4f}s')
             
             self.update_plots(epoch)
 

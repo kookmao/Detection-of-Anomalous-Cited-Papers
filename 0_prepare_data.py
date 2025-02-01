@@ -9,6 +9,7 @@ from pathlib import Path
 from numba import njit, prange
 import pandas as pd
 import shutil
+from tqdm import tqdm  # Added for progress bar
 
 
 @njit(parallel=True)
@@ -79,21 +80,24 @@ def fast_unique_edges(edges):
     return sorted_edges[unique_mask]
 
 def read_dataset_efficient(file_path, dataset):
-    """Efficiently read dataset using pandas"""
-    if dataset in ['digg', 'uci']:
-        edges = np.loadtxt(
-            file_path,
-            dtype=np.int32,
-            comments='%',
-            delimiter=' '
-        )
-        return edges[:, 0:2]
-    else:
-        # Read in chunks for large files
-        chunks = []
-        for chunk in pd.read_csv(file_path, usecols=['fromNode', 'toNode'], chunksize=100000):
-            chunks.append(chunk[['fromNode', 'toNode']].values.astype(np.int32))
-        return np.vstack(chunks)
+    """Read dataset with proper header handling for different datasets"""
+    chunks = []
+    delimiter = ' ' if dataset in ['digg', 'uci'] else ','
+    header = None if dataset in ['digg', 'uci'] else 0  # Skip header for non-digg/uci datasets
+    usecols = [0, 1] if dataset in ['digg', 'uci'] else ['fromNode', 'toNode']
+
+    for chunk in pd.read_csv(
+        file_path,
+        usecols=usecols,
+        delimiter=delimiter,
+        header=header,
+        dtype=np.int32,
+        engine='c',
+        chunksize=500000
+    ):
+        chunks.append(chunk.values.astype(np.int32))
+    
+    return np.vstack(chunks)
 
 @njit(parallel=True)
 def process_edge_chunk(chunk, node_array):
@@ -144,11 +148,12 @@ def preprocessDataset(dataset):
     
     # Process edges in parallel chunks using Numba
     print("Processing edges in chunks...")
-    chunk_size = 100000
+    chunk_size = 500000
     num_chunks = (len(edges) + chunk_size - 1) // chunk_size
     modified_edges = np.empty_like(edges)
     
-    for i in range(num_chunks):
+    # Single loop with progress bar (removed duplicate loop)
+    for i in tqdm(range(num_chunks), desc="Processing chunks"):
         start_idx = i * chunk_size
         end_idx = min((i + 1) * chunk_size, len(edges))
         chunk = edges[start_idx:end_idx]
@@ -165,8 +170,9 @@ def preprocessDataset(dataset):
     
     print(f'vertex: {len(unique_vertices)}, edge: {len(modified_edges)}')
     
-    # Save processed edges in numpy format for faster loading
-    np.save(f'data/interim/{dataset}.npy', modified_edges)
+    # Save processed edges as pkl instead of npy
+    with open(f'data/interim/{dataset}.pkl', 'wb') as f:
+        pickle.dump(modified_edges, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     print(f'Preprocess finished! Time: {time.time() - t0:.2f}s')
     return modified_edges, edge_mapping, len(unique_vertices)
@@ -200,8 +206,8 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     t0 = time.time()
     
     # Efficient sparse matrix operations
-    train_mat = sparse.csr_matrix(train_mat)
-    train_mat = (train_mat + train_mat.T + sparse.eye(n)).tolil()
+    train_mat_coo = sparse.coo_matrix(train_mat)
+    train_mat = (sparse.csr_matrix(train_mat_coo) + sparse.csr_matrix(train_mat_coo.T) + sparse.eye(n)).tolil()
     headtail = train_mat.rows
     del train_mat
     
