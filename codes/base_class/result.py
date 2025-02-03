@@ -1,28 +1,19 @@
 import abc
+from typing import Optional, Any, Dict
 
-class result:
-    """
-    ResultModule: Abstract Class
-    Entries: 
-    """
-    
-    data = None
-    
-    result_name = None
-    result_description = None
-    
-    result_destination_folder_path = None
-    result_destination_file_name = None
-    
-    # initialization function
-    def __init__(self, rName=None, rType=None):
-        self.result_name = rName
-        self.result_description = rType
+class result(abc.ABC):
+    """Abstract base class for results"""
+    def __init__(self, rName: Optional[str] = None, rType: Optional[str] = None):
+        self.result_name: Optional[str] = rName
+        self.result_description: Optional[str] = rType
+        self.data: Optional[Dict] = None
+        self.result_destination_folder_path: Optional[str] = None
+        self.result_destination_file_name: Optional[str] = None
 
     @abc.abstractmethod
-    def save(self):
-        return
- 
+    def save(self) -> None:
+        pass
+
     @abc.abstractmethod
-    def load(self):
-        return
+    def load(self) -> Dict:
+        pass

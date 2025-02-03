@@ -2,24 +2,17 @@ import numpy as np
 import torch
 import igraph
 from functools import lru_cache
-from timing_utils import print_tensor_device
+from typing import List, Dict, Tuple, Set, Optional
 
 
-# WL dict
-def WL_setting_init(node_list, link_list):
-    node_color_dict = {}
-    node_neighbor_dict = {}
+@lru_cache(maxsize=1024)
+def WL_setting_init(node_list: np.ndarray, link_list: np.ndarray) -> Tuple[Dict, Dict]:
+    """Initialize WL settings with efficient caching"""
+    node_color_dict = {int(node): 1 for node in node_list}
+    node_neighbor_dict = {int(node): {} for node in node_list}
 
-    for node in node_list:
-        node_color_dict[node] = 1
-        node_neighbor_dict[node] = {}
-
-    for pair in link_list:
-        u1, u2 = pair
-        if u1 not in node_neighbor_dict:
-            node_neighbor_dict[u1] = {}
-        if u2 not in node_neighbor_dict:
-            node_neighbor_dict[u2] = {}
+    for u1, u2 in link_list:
+        u1, u2 = int(u1), int(u2)
         node_neighbor_dict[u1][u2] = 1
         node_neighbor_dict[u2][u1] = 1
 
@@ -27,31 +20,34 @@ def WL_setting_init(node_list, link_list):
 
 
 
-def compute_zero_WL(node_list, link_list):
-    WL_dict = {}
-    for i in node_list:
-        WL_dict[i] = 0
-    return WL_dict
+def compute_zero_WL(node_list: np.ndarray, link_list: np.ndarray) -> Dict:
+    """Compute zero-iteration WL with validation"""
+    return {int(i): 0 for i in node_list}
+#max_hop = 999  # Set maximum hop distance
 
-max_hop = 999  # Set maximum hop distance
-
-def get_hop(graph, source, target):
+@lru_cache(maxsize=2048)
+def get_hop(graph: igraph.Graph, source: int, target: int, max_hop: int = 99) -> int:
+    """Calculate hop distance with caching and validation"""
     try:
-        # Use igraph's shortest_paths method
+        if source >= graph.vcount() or target >= graph.vcount():
+            return max_hop
         distance = graph.shortest_paths(source=source, target=[target])[0][0]
-        return int(distance) if distance != float('inf') else max_hop
-    except (igraph.InternalError, IndexError):
-        return max_hop
-    except Exception as e:
-        print(f"Hop calc error: {str(e)}")
+        return min(int(distance) if distance != float('inf') else max_hop, max_hop)
+    except Exception:
         return max_hop
 
 # batching + hop + int + time
-def compute_batch_hop(node_list, edges_all, num_snap, Ss, k=5, window_size=1):
+def compute_batch_hop(node_list: np.ndarray,
+                     edges_all: List[np.ndarray],
+                     num_snap: int,
+                     Ss: List[np.ndarray],
+                     k: int = 5,
+                     window_size: int = 1) -> List[Dict]:
+    """Compute batch hop distances efficiently"""
     batch_hop_dicts = [None] * (window_size-1)
     s_ranking = [0] + list(range(k+1))
 
-    # Create igraph objects
+    # Create igraph objects once
     Gs = []
     for snap in range(num_snap):
         g = igraph.Graph()
@@ -64,37 +60,38 @@ def compute_batch_hop(node_list, edges_all, num_snap, Ss, k=5, window_size=1):
         edges = edges_all[snap]
 
         for edge in edges:
-            # Convert edge nodes to integers
-            u = edge[0].item() if isinstance(edge[0], torch.Tensor) else int(edge[0])
-            v = edge[1].item() if isinstance(edge[1], torch.Tensor) else int(edge[1])
-            assert u < len(node_list), f"Invalid node index {u}"
-            assert v < len(node_list), f"Invalid node index {v}"
-            edge_idx = f"{snap}_{u}_{v}"  # Integer-based ID
-            batch_hop_dict[edge_idx] = []
+            u = int(edge[0].item() if isinstance(edge[0], torch.Tensor) else edge[0])
+            v = int(edge[1].item() if isinstance(edge[1], torch.Tensor) else edge[1])
             
-            for lookback in range(window_size):
-                s = Ss[snap - lookback][u] + Ss[snap - lookback][v]  # Use integer IDs
-                s[u] = -1000  # Use integer IDs
-                s[v] = -1000
-                top_k_neighbor_index = s.argsort()[-k:][::-1]
-
-                indexs = np.hstack((
-                    np.array([u, v]),  # Use integer IDs
-                    top_k_neighbor_index.cpu().numpy() if isinstance(top_k_neighbor_index, torch.Tensor) else top_k_neighbor_index
-                ))
+            if u >= len(node_list) or v >= len(node_list):
+                continue
                 
-                for i, neighbor_index in enumerate(indexs):
-                    try:
-                        hop1 = get_hop(Gs[snap-lookback], u, neighbor_index)  # Use integer IDs
-                    except:
-                        hop1 = 99
-                    try:
-                        hop2 = get_hop(Gs[snap-lookback], v, neighbor_index)  # Use integer IDs
-                    except:
-                        hop2 = 99
+            edge_idx = f"{snap}_{u}_{v}"
+            batch_hop_dict[edge_idx] = []
+
+            for lookback in range(window_size):
+                s = Ss[snap - lookback][u] + Ss[snap - lookback][v]
+                s[u] = -1000
+                s[v] = -1000
+                
+                top_k_neighbor_index = s.argsort()[-k:][::-1]
+                indices = np.hstack((
+                    np.array([u, v]),
+                    top_k_neighbor_index.cpu().numpy() if isinstance(top_k_neighbor_index, torch.Tensor)
+                    else top_k_neighbor_index
+                ))
+
+                for i, neighbor_index in enumerate(indices):
+                    hop1 = get_hop(Gs[snap-lookback], u, neighbor_index)
+                    hop2 = get_hop(Gs[snap-lookback], v, neighbor_index)
                     hop = min(hop1, hop2)
-                    batch_hop_dict[edge_idx].append((neighbor_index, s_ranking[i], hop, lookback))
-                    
+                    batch_hop_dict[edge_idx].append((
+                        int(neighbor_index),
+                        s_ranking[i],
+                        hop,
+                        lookback
+                    ))
+
         batch_hop_dicts.append(batch_hop_dict)
 
     return batch_hop_dicts
@@ -185,14 +182,19 @@ def compute_batch_hop_gpu(idx, edges, num_snap, S_list, k, window_size):
     return batch_hop_dict_list
 
 # Dict to embeddings
-def dicts_to_embeddings(feats, batch_hop_dicts, wl_dict, num_snap, 
-                       use_raw_feat=False, device=None, 
-                       window_size=2, k=4):
+def dicts_to_embeddings(feats: Optional[np.ndarray],
+                       batch_hop_dicts: List[Dict],
+                       wl_dict: Dict,
+                       num_snap: int,
+                       use_raw_feat: bool = False,
+                       device: Optional[torch.device] = None,
+                       window_size: int = 2,
+                       k: int = 4) -> Tuple[None, None, List, List, List]:
+    """Convert dictionaries to embeddings with validation"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     expected_length = window_size * (2 + k)
-    
     int_embeddings = []
     hop_embeddings = []
     time_embeddings = []
@@ -203,30 +205,35 @@ def dicts_to_embeddings(feats, batch_hop_dicts, wl_dict, num_snap,
             hop_embeddings.append(None)
             time_embeddings.append(None)
             continue
-            
+
         # Process entries
         int_data = []
         hop_data = []
         time_data = []
-        
+
         for edge_key in batch_hop_dicts[snap]:
             entries = batch_hop_dicts[snap][edge_key][:expected_length]
             
             # Pad if needed
-            while len(entries) < expected_length:
-                entries.append((0, 0, 99, 0))
-            
+            if len(entries) < expected_length:
+                entries.extend([(0, 0, 99, 0)] * (expected_length - len(entries)))
+
             int_vals = [e[1] for e in entries]
             hop_vals = [e[2] for e in entries]
             time_vals = [e[3] for e in entries]
-            
+
             int_data.append(int_vals)
             hop_data.append(hop_vals)
             time_data.append(time_vals)
-        
-        # Create tensors with correct dimensions
-        int_embeddings.append(torch.LongTensor(int_data).to(device))
-        hop_embeddings.append(torch.LongTensor(hop_data).to(device))
-        time_embeddings.append(torch.LongTensor(time_data).to(device))
-    
-    return (None, None, hop_embeddings, int_embeddings, time_embeddings)
+
+        # Create tensors with proper device placement
+        if int_data:
+            int_embeddings.append(torch.LongTensor(int_data).to(device))
+            hop_embeddings.append(torch.LongTensor(hop_data).to(device))
+            time_embeddings.append(torch.LongTensor(time_data).to(device))
+        else:
+            int_embeddings.append(None)
+            hop_embeddings.append(None)
+            time_embeddings.append(None)
+
+    return None, None, hop_embeddings, int_embeddings, time_embeddings

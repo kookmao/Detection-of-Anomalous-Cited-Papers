@@ -1,6 +1,7 @@
 from functools import lru_cache
 import os
 from matplotlib import pyplot as plt
+import scipy as sp
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -22,82 +23,150 @@ import torch_geometric
 from torch_geometric.utils import k_hop_subgraph
 
 def check_gpu_memory(n, batch_size):
-    """Check if GPU has enough memory for the computation"""
+    """Check if GPU has enough memory for computation"""
     if not torch.cuda.is_available():
         return False
     
     try:
-        # Estimate memory needed for main adjacency matrices
-        adj_memory = n * n * 4  # Float32 adjacency matrix
-        total_memory = adj_memory * batch_size
-        
-        # Get available GPU memory
+        torch.cuda.empty_cache()
         gpu_memory = torch.cuda.get_device_properties(0).total_memory
         gpu_memory_used = torch.cuda.memory_allocated()
         gpu_memory_free = gpu_memory - gpu_memory_used
         
-        # Check if we have enough memory (with 20% buffer)
-        return total_memory * 1.2 < gpu_memory_free
+        # Estimate memory needed for essential operations
+        estimated_memory = n * batch_size * 4 * 3  # Basic tensor operations
+        
+        # Check if we have enough memory with 20% buffer
+        return estimated_memory * 1.2 < gpu_memory_free
     except:
         return False
 
 
-def compute_batch_hop_gpu(node_list, edges_all, num_snap, Ss, k=5, window_size=1):
+def compute_batch_hop_gpu(node_list, edges, num_snap, Ss, k=5, window_size=1):
+    """Memory-efficient GPU batch hop computation"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_hop_dicts = [None] * (window_size-1)
-    
-    # Preconvert S matrices
-    Ss_gpu = [torch.as_tensor(S.toarray() if hasattr(S, 'toarray') else S, 
-                            device=device, dtype=torch.float32) for S in Ss]
-    
-    # Preconvert edges
-    edge_tensors = [torch.tensor(edges, dtype=torch.long, device=device) 
-                   for edges in edges_all]
+
+    # Verify inputs
+    if not isinstance(node_list, np.ndarray):
+        node_list = np.array(node_list)
+    max_node_id = node_list.max()
+
+    # Convert S matrices to sparse tensors once
+    sparse_Ss = []
+    for S in Ss:
+        if S is None:
+            sparse_Ss.append(None)
+            continue
+
+        if not sp.issparse(S):
+            S = sp.csr_matrix(S)
+
+        # Convert to COO format for efficient GPU transfer
+        S_coo = S.tocoo()
+        indices = torch.from_numpy(
+            np.vstack((S_coo.row, S_coo.col))
+        ).long().to(device)
+        values = torch.from_numpy(S_coo.data).float().to(device)
+        size = torch.Size(S_coo.shape)
+        sparse_Ss.append(
+            torch.sparse_coo_tensor(indices, values, size, device=device)
+        )
 
     for snap in range(window_size-1, num_snap):
         batch_hop_dict = {}
-        current_edges = edge_tensors[snap]
-        sources = current_edges[:, 0]
-        targets = current_edges[:, 1]
+        current_edges = edges[snap]
 
-        for lookback in range(window_size):
-            sl = snap - lookback
-            S = Ss_gpu[sl]
-            
-            # Vectorized scoring
-            scores = S[sources] + S[targets]
-            scores.scatter_(1, sources.unsqueeze(1), -1000)
-            scores.scatter_(1, targets.unsqueeze(1), -1000)
-            _, top_k = torch.topk(scores, k, dim=1)
+        # Ensure edges are on correct device
+        if not isinstance(current_edges, torch.Tensor):
+            current_edges = torch.tensor(current_edges, device=device)
 
-            # Process all edges
-            for idx in range(len(current_edges)):
-                u = sources[idx].item()
-                v = targets[idx].item()
-                key = f"{snap}_{u}_{v}"
-                
-                # Get neighbor nodes
-                neighbors = [u, v] + top_k[idx].tolist()
-                
-                # Get precomputed hop distances from S matrix
-                hop_u = S[u].cpu().numpy()[neighbors]
-                hop_v = S[v].cpu().numpy()[neighbors]
-                hops = np.minimum(hop_u, hop_v).astype(int).tolist()
-                
-                # Build entries with proper indexing
+        # Process in batches to manage memory
+        batch_size = min(1000, len(current_edges))
+        for start_idx in range(0, len(current_edges), batch_size):
+            end_idx = min(start_idx + batch_size, len(current_edges))
+            batch = current_edges[start_idx:end_idx]
+
+            # Process each edge in the batch
+            for edge_idx, (u, v) in enumerate(batch.cpu().numpy()):
+                edge_key = f"{snap}_{u}_{v}"
                 entries = []
-                for i, node in enumerate(neighbors):
-                    entries.append((
-                        int(node),
-                        i,  # Original ranking
-                        min(hops[i], 99),  # Clamp to max hop
-                        lookback
-                    ))
-                
-                batch_hop_dict[key] = entries
+
+                # Process each lookback window
+                for lookback in range(window_size):
+                    sl = snap - lookback
+                    if sparse_Ss[sl] is None:
+                        continue
+
+                    S = sparse_Ss[sl]
+
+                    # Get neighbor information
+                    u_row = S[u].coalesce()
+                    v_row = S[v].coalesce()
+
+                    # Combine neighbors efficiently
+                    u_indices = u_row.indices()[1]  # Use dimension 1 for column indices
+                    v_indices = v_row.indices()[1]
+                    u_values = u_row.values()
+                    v_values = v_row.values()
+
+                    # Create unified neighbor list
+                    all_neighbors = torch.unique(torch.cat([
+                        u_indices, v_indices,
+                        torch.tensor([u, v], device=device)
+                    ]))
+
+                    # Calculate combined scores
+                    neighbor_scores = torch.zeros(len(all_neighbors), device=device)
+                    for idx, neighbor in enumerate(all_neighbors):
+                        u_mask = u_indices == neighbor
+                        v_mask = v_indices == neighbor
+                        u_score = u_values[u_mask].sum() if torch.any(u_mask) else 0
+                        v_score = v_values[v_mask].sum() if torch.any(v_mask) else 0
+                        neighbor_scores[idx] = u_score + v_score
+
+                    # Remove source and target nodes
+                    mask = (all_neighbors != u) & (all_neighbors != v)
+                    valid_neighbors = all_neighbors[mask]
+                    valid_scores = neighbor_scores[mask]
+
+                    # Select top k neighbors
+                    if len(valid_scores) > k:
+                        _, top_indices = valid_scores.topk(k)
+                        selected = valid_neighbors[top_indices]
+                    else:
+                        selected = valid_neighbors
+
+                    # Add base nodes first
+                    entries.extend([
+                        (int(u), 0, 0, lookback),
+                        (int(v), 1, 0, lookback)
+                    ])
+
+                    # Add selected neighbors
+                    for idx, node in enumerate(selected.cpu().numpy()):
+                        # Calculate hop distance using sparse matrix structure
+                        node_row = S[node].coalesce()
+                        hop = min(len(node_row.indices()[1]), 99)
+                        entries.append((
+                            int(node),
+                            idx + 2,
+                            hop,
+                            lookback
+                        ))
+
+                batch_hop_dict[edge_key] = entries
+
+            # Memory management
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         batch_hop_dicts.append(batch_hop_dict)
-    
+
+        # Memory cleanup after each snapshot
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     return batch_hop_dicts
 
 def compute_batch_hop_with_fallback(idx, edges, num_snap, S_list, k, window_size):
@@ -120,9 +189,6 @@ class DynADModel(BertPreTrainedModel):
     max_epoch = 500
     spy_tag = True
 
-    load_pretrained_path = ''
-    save_pretrained_path = ''
-
     def __init__(self, config, args):
         super(DynADModel, self).__init__(config)
         self.args = args
@@ -132,32 +198,27 @@ class DynADModel(BertPreTrainedModel):
         self.weight_decay = config.weight_decay
         self.init_weights()
         
-        # Initialize tracking lists
         self.train_losses = []
         self.train_aucs = []
         self.test_aucs = []
         
-        # Set up plotting
+        # Plotting setup
         plt.ion()
         self.fig, self.axes = plt.subplots(1, 3, figsize=(20, 7))
+        self._setup_axes()
         
-        # Configure axes
-        self.axes[0].set_xlabel('Epoch')
-        self.axes[0].set_ylabel('Loss')
-        self.axes[0].set_title('Training Loss')
-        
-        self.axes[1].set_xlabel('Epoch')
-        self.axes[1].set_ylabel('AUC')
-        self.axes[1].set_title('Training AUC')
-        
-        self.axes[2].set_xlabel('Epoch')
-        self.axes[2].set_ylabel('AUC')
-        self.axes[2].set_title('Test AUC')
-        
-        plt.tight_layout()
-        plt.show()
-        
+        # Initialize tracking
         self.anomaly_tracker = AnomalyTracker(persistence_threshold=0.8)
+        
+        # Device setup with verification
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(self.device)
+        print(f"Model initialized on {self.device}")
+        
+        # Memory tracking
+        if torch.cuda.is_available():
+            self.initial_memory = torch.cuda.memory_allocated()
+            print(f"Initial GPU memory: {self.initial_memory/1e9:.2f} GB")
         
         # Move model to GPU if available
         if torch.cuda.is_available():
@@ -166,78 +227,57 @@ class DynADModel(BertPreTrainedModel):
         else:
             print("Model initialized on CPU")
 
-    # def evaluate_test_set(self):
-    #     """Evaluate model on test set"""
-    #     self.eval()
-    #     all_true = []
-    #     all_pred = []
-        
-    #     raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
-    #         self.generate_embedding([self.data['edges'][snap] for snap in self.data['snap_test']])
-
-    #     for idx, snap in enumerate(self.data['snap_test']):
-    #         if int_embeddings[idx] is None:
-    #             continue
-                
-    #         test_edges = self.data['edges'][snap]
-    #         test_labels = self.data['y'][snap]
+    def _setup_axes(self):
+            """Configure plot axes"""
+            titles = ['Training Loss', 'Training AUC', 'Test AUC']
+            ylabels = ['Loss', 'AUC', 'AUC']
             
-    #         with torch.no_grad():
-    #             output = self.forward(int_embeddings[idx], 
-    #                                 hop_embeddings[idx],
-    #                                 time_embeddings[idx]).squeeze()
-    #             pred_scores = torch.sigmoid(output).cpu().numpy()
+            for ax, title, ylabel in zip(self.axes, titles, ylabels):
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel(ylabel)
+                ax.set_title(title)
             
-    #         all_true.append(test_labels.cpu().numpy())
-    #         all_pred.append(pred_scores)
-        
-    #     if len(all_true) == 0:
-    #         return 0.5
-            
-    #     all_true = np.concatenate(all_true)
-    #     all_pred = np.concatenate(all_pred)
-    #     test_auc = metrics.roc_auc_score(all_true, all_pred)
-        
-    #     return test_auc
-
+            plt.tight_layout()
+            plt.show()
+    
     def evaluate_test_set(self):
         self.eval()
         all_true = []
         all_pred = []
         
-        # Removed TimingContext
         raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
             self.generate_embedding([self.data['edges'][snap] for snap in self.data['snap_test']])
-
-        device = next(self.parameters()).device
-        
-        for idx, snap in enumerate(self.data['snap_test']):
-            if int_embeddings[idx] is None:
-                continue
-                
-            test_edges = self.data['edges'][snap]
-            test_labels = self.data['y'][snap]
             
-            with torch.no_grad():
-                int_embed = int_embeddings[idx].to(device)
-                hop_embed = hop_embeddings[idx].to(device)
-                time_embed = time_embeddings[idx].to(device)
+        with torch.no_grad():
+            for idx, snap in enumerate(self.data['snap_test']):
+                if int_embeddings[idx] is None:
+                    continue
+                    
+                test_edges = self.data['edges'][snap]
+                test_labels = self.data['y'][snap]
+                
+                int_embed = int_embeddings[idx].to(self.device)
+                hop_embed = hop_embeddings[idx].to(self.device)
+                time_embed = time_embeddings[idx].to(self.device)
                 
                 output = self.forward(int_embed, hop_embed, time_embed).squeeze()
                 pred_scores = torch.sigmoid(output).cpu().numpy()
-            
-            all_true.append(test_labels.cpu().numpy())
-            all_pred.append(pred_scores)
+                
+                all_true.append(test_labels.cpu().numpy())
+                all_pred.append(pred_scores)
+                
+                # Clear cache after each snapshot
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
-        if len(all_true) == 0:
+        if not all_true:
             print("No test samples processed")
             return 0.5
-                
+            
         all_true = np.concatenate(all_true)
         all_pred = np.concatenate(all_pred)
-        test_auc = metrics.roc_auc_score(all_true, all_pred)
         
-        return test_auc
+        return metrics.roc_auc_score(all_true, all_pred)
 
     def update_plots(self, epoch):
         """Update all training and testing plots"""
@@ -280,17 +320,9 @@ class DynADModel(BertPreTrainedModel):
             self.anomaly_tracker.generate_reports(output_dir=output_dir)
 
     def forward(self, init_pos_ids, hop_dis_ids, time_dis_ids, idx=None):
-
         outputs = self.transformer(init_pos_ids, hop_dis_ids, time_dis_ids)
-
-        sequence_output = 0
-        for i in range(self.config.k+1):
-            sequence_output = outputs[0].mean(dim=1)  # Average across all sequence positions
-
-        sequence_output /= float(self.config.k+1)
-
+        sequence_output = torch.mean(outputs[0], dim=1)
         output = self.cls_y(sequence_output)
-
         return output.squeeze()
 
     def batch_cut(self, idx_list):
@@ -411,21 +443,29 @@ class DynADModel(BertPreTrainedModel):
     #     return negative_edges
 
     def negative_sampling(self, edges):
+        """Memory-efficient negative sampling"""
         neg_edges = []
-        num_nodes = len(self.data['idx'])  # Total nodes in the graph
+        num_nodes = len(self.data['idx'])
         
         for snap in self.data['snap_train']:
-            adj_matrix = self.data['A'][snap].to_dense().cpu()
-            disconnected = (adj_matrix == 0).nonzero(as_tuple=False)
+            adj = self.data['A'][snap].to_dense().cpu()
+            disconnected = (adj == 0).nonzero(as_tuple=False)
             
-            # Filter invalid edges (nodes ≥ num_nodes)
-            valid = (disconnected[:, 0] < num_nodes) & (disconnected[:, 1] < num_nodes)
-            disconnected_valid = disconnected[valid]
+            # Filter valid edges
+            valid_mask = (disconnected[:, 0] < num_nodes) & (disconnected[:, 1] < num_nodes)
+            valid_edges = disconnected[valid_mask]
             
-            # Ensure we don't sample more than available
-            sample_size = min(len(edges[snap]), len(disconnected_valid))
-            sampled_idx = torch.randint(0, len(disconnected_valid), (sample_size,))
-            neg_edges.append(disconnected_valid[sampled_idx].numpy())
+            # Sample edges
+            if len(valid_edges) > 0:
+                sample_size = min(len(edges[snap]), len(valid_edges))
+                indices = torch.randperm(len(valid_edges))[:sample_size]
+                neg_edges.append(valid_edges[indices].numpy())
+            else:
+                print(f"Warning: No valid negative edges for snapshot {snap}")
+                neg_edges.append(np.empty((0, 2), dtype=np.int64))
+            
+            del adj
+            torch.cuda.empty_cache()
         
         return neg_edges
 
@@ -545,56 +585,71 @@ class DynADModel(BertPreTrainedModel):
 
     def train_model(self, max_epoch):
         print("\n=== Starting Training ===")
-        device = next(self.parameters()).device
-        print(f"Training on device: {device}")
         
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scaler = GradScaler()
         
-        # Removed TimingContext
         raw_embeddings, wl_embeddings, hop_embeddings, int_embeddings, time_embeddings = \
             self.generate_embedding(self.data['edges'])
-        
+            
         self.data['raw_embeddings'] = None
+        
+        best_test_auc = 0
+        patience = 10
+        epochs_no_improve = 0
         
         for epoch in range(max_epoch):
             epoch_start = time.time()
+            self.train()
             
-            # Removed TimingContext
-            negatives = self.negative_sampling(self.data['edges'][:max(self.data['snap_train']) + 1])
+            # Generate negatives
+            negatives = self.negative_sampling(
+                self.data['edges'][:max(self.data['snap_train']) + 1]
+            )
             
-            # Removed TimingContext
             _, _, hop_embeddings_neg, int_embeddings_neg, time_embeddings_neg = \
                 self.generate_embedding(negatives)
             
-            self.train()
+            # Training loop
             loss_train = 0
-            all_true = []
-            all_pred = []
+            batch_metrics = []
             
-            batch_times = []
             for snap in self.data['snap_train']:
                 if int_embeddings[snap] is None:
                     continue
-                    
-                batch_start = time.time()
                 
-                # Data preparation
-                int_embedding = torch.vstack((int_embeddings[snap], int_embeddings_neg[snap])).to(device)
-                hop_embedding = torch.vstack((hop_embeddings[snap], hop_embeddings_neg[snap])).to(device)
-                time_embedding = torch.vstack((time_embeddings[snap], time_embeddings_neg[snap])).to(device)
-                y = torch.hstack((self.data['y'][snap].float(), 
-                                torch.ones(int_embeddings_neg[snap].size()[0]))).to(device)
+                # Prepare batch data
+                int_embed = torch.vstack((
+                    int_embeddings[snap], 
+                    int_embeddings_neg[snap]
+                )).to(self.device)
                 
-                optimizer.zero_grad()
+                hop_embed = torch.vstack((
+                    hop_embeddings[snap], 
+                    hop_embeddings_neg[snap]
+                )).to(self.device)
                 
-                # Forward pass
+                time_embed = torch.vstack((
+                    time_embeddings[snap], 
+                    time_embeddings_neg[snap]
+                )).to(self.device)
+                
+                y = torch.hstack((
+                    self.data['y'][snap].float(),
+                    torch.ones(int_embeddings_neg[snap].size(0))
+                )).to(self.device)
+                
+                optimizer.zero_grad(set_to_none=True)
+                
+                # Forward pass with mixed precision
                 with autocast():
-                    output = self.forward(int_embedding, hop_embedding, time_embedding).squeeze()
+                    output = self.forward(int_embed, hop_embed, time_embed).squeeze()
                     loss = F.binary_cross_entropy_with_logits(output, y)
                 
-                # Backward pass
+                # Backward pass with gradient scaling
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 
@@ -602,31 +657,64 @@ class DynADModel(BertPreTrainedModel):
                 loss_train += loss.item()
                 pred_scores = torch.sigmoid(output).detach().cpu().numpy()
                 true_labels = y.detach().cpu().numpy()
-                all_true.append(true_labels)
-                all_pred.append(pred_scores)
+                batch_metrics.append((true_labels, pred_scores))
                 
-                batch_time = time.time() - batch_start
-                batch_times.append(batch_time)
+                # Clear cache
+                torch.cuda.empty_cache()
+            
+            # Calculate epoch metrics
+            train_loss = loss_train / len(self.data['snap_train'])
+            
+            all_true = np.concatenate([m[0] for m in batch_metrics])
+            all_pred = np.concatenate([m[1] for m in batch_metrics])
+            train_auc = metrics.roc_auc_score(all_true, all_pred)
             
             # Test evaluation
             test_auc = self.evaluate_test_set()
             
-            # Calculate epoch metrics
-            train_loss = loss_train / len(self.data['snap_train'])
-            all_true = np.concatenate(all_true)
-            all_pred = np.concatenate(all_pred)
-            train_auc = metrics.roc_auc_score(all_true, all_pred)
+            # Early stopping check
+            if test_auc > best_test_auc:
+                best_test_auc = test_auc
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve == patience:
+                    print(f'Early stopping triggered at epoch {epoch+1}')
+                    break
             
+            # Update tracking
             self.train_losses.append(train_loss)
             self.train_aucs.append(train_auc)
             self.test_aucs.append(test_auc)
             
-            avg_batch_time = np.mean(batch_times)
-            print(f'Epoch: {epoch + 1}, Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, Test AUC: {test_auc:.4f}, Total Time: {time.time() - epoch_start:.4f}s')
+            print(f'Epoch: {epoch + 1}, Loss: {train_loss:.4f}, '
+                  f'Train AUC: {train_auc:.4f}, Test AUC: {test_auc:.4f}, '
+                  f'Time: {time.time() - epoch_start:.2f}s')
             
             self.update_plots(epoch)
-
+            
+            # Generate reports periodically
+            if (epoch + 1) % 10 == 0:
+                self._generate_epoch_reports(epoch)
+            
+            # Memory stats
+            if torch.cuda.is_available():
+                max_memory = torch.cuda.max_memory_allocated()
+                print(f"Max GPU memory: {max_memory/1e9:.2f} GB")
+                torch.cuda.reset_peak_memory_stats()
+        
         return self.learning_record_dict
+
+    def _generate_epoch_reports(self, epoch):
+            """Generate periodic reports and visualizations"""
+            output_dir = f'anomaly_analysis_epoch_{epoch+1}'
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Save plots
+            plt.savefig(f'{output_dir}/training_progress.png')
+            
+            # Generate anomaly reports
+            self.anomaly_tracker.generate_reports(output_dir=output_dir)
 
     def _train_epoch(self, raw_embeddings, wl_embeddings, hop_embeddings, 
                     int_embeddings, time_embeddings, optimizer):
@@ -676,5 +764,4 @@ class DynADModel(BertPreTrainedModel):
         return train_loss, train_auc
 
     def run(self):
-        self.train_model(self.max_epoch)
-        return self.learning_record_dict
+        return self.train_model(self.max_epoch)

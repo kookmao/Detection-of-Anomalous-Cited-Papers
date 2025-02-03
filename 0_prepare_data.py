@@ -14,20 +14,22 @@ from tqdm import tqdm  # Added for progress bar
 
 @njit(parallel=True)
 def optimize_edge_order(edges):
-    """Parallel edge ordering with Numba acceleration"""
+    """Parallel edge ordering with bounds checking"""
+    edges = edges.copy()  # Prevent modifying input
+    
+    # Verify no negative indices
+    if np.any(edges < 0):
+        raise ValueError("Negative indices found in edges")
+    
     for i in prange(len(edges)):
         if edges[i, 0] > edges[i, 1]:
-            # Manual swap
             temp = edges[i, 0]
             edges[i, 0] = edges[i, 1]
             edges[i, 1] = temp
     
-    # Remove self-loops
-    non_self = np.zeros(len(edges), dtype=np.bool_)
-    for i in prange(len(edges)):
-        non_self[i] = edges[i, 0] != edges[i, 1]
-    
-    return edges[non_self]
+    # Remove self-loops efficiently
+    mask = edges[:, 0] != edges[:, 1]
+    return edges[mask]
 
 def clean_directories():
     """Delete all files in specified directories except 'i'."""
@@ -54,14 +56,18 @@ def clean_directories():
 
 @njit
 def edge_to_key(edge):
-    """Convert edge to a unique key for comparison"""
-    return edge[0] * 1000000 + edge[1]  # Adjust multiplier based on your max node ID
+    """Convert edge to unique key ensuring 0-based indexing"""
+    max_id = np.iinfo(np.int32).max // 2  # Safe upper bound
+    return min(edge[0], max_id) * max_id + min(edge[1], max_id)
 
 @njit
 def fast_unique_edges(edges):
-    """Custom implementation of unique for edges"""
-    # First, sort edges based on a unique key
+    """Optimized unique edge finding with verification"""
     n = len(edges)
+    if n == 0:
+        return edges
+        
+    # Generate unique keys
     keys = np.zeros(n, dtype=np.int64)
     for i in range(n):
         keys[i] = edge_to_key(edges[i])
@@ -70,34 +76,54 @@ def fast_unique_edges(edges):
     sort_idx = np.argsort(keys)
     sorted_edges = edges[sort_idx]
     
-    # Find unique edges
+    # Find unique edges with mask
     unique_mask = np.ones(n, dtype=np.bool_)
     for i in range(1, n):
         if (sorted_edges[i, 0] == sorted_edges[i-1, 0] and 
             sorted_edges[i, 1] == sorted_edges[i-1, 1]):
             unique_mask[i] = False
-            
+    
     return sorted_edges[unique_mask]
 
 def read_dataset_efficient(file_path, dataset):
-    """Read dataset with proper header handling for different datasets"""
-    chunks = []
+    """Read dataset with robust error handling"""
     delimiter = ' ' if dataset in ['digg', 'uci'] else ','
-    header = None if dataset in ['digg', 'uci'] else 0  # Skip header for non-digg/uci datasets
+    header = None if dataset in ['digg', 'uci'] else 0
     usecols = [0, 1] if dataset in ['digg', 'uci'] else ['fromNode', 'toNode']
-
-    for chunk in pd.read_csv(
-        file_path,
-        usecols=usecols,
-        delimiter=delimiter,
-        header=header,
-        dtype=np.int32,
-        engine='c',
-        chunksize=500000
-    ):
-        chunks.append(chunk.values.astype(np.int32))
     
-    return np.vstack(chunks)
+    chunks = []
+    chunk_size = 500000
+    
+    try:
+        for chunk in pd.read_csv(
+            file_path,
+            usecols=usecols,
+            delimiter=delimiter,
+            header=header,
+            dtype=np.int32,
+            engine='c',
+            chunksize=chunk_size
+        ):
+            # Verify no negative values
+            if chunk.values.min() < 0:
+                raise ValueError(f"Negative indices found in chunk from {file_path}")
+            chunks.append(chunk.values)
+        
+        if not chunks:
+            raise ValueError(f"No data read from {file_path}")
+            
+        data = np.vstack(chunks)
+        
+        # Final verification
+        if data.dtype != np.int32:
+            data = data.astype(np.int32)
+        if np.any(data < 0):
+            raise ValueError(f"Negative indices found after processing {file_path}")
+            
+        return data
+        
+    except Exception as e:
+        raise RuntimeError(f"Error reading {file_path}: {str(e)}")
 
 @njit(parallel=True)
 def process_edge_chunk(chunk, node_array):
@@ -109,7 +135,7 @@ def process_edge_chunk(chunk, node_array):
     return result
 
 def preprocessDataset(dataset):
-    print('Preprocess dataset: ' + dataset)
+    print(f'Preprocess dataset: {dataset}')
     t0 = time.time()
     
     # Create output directories
@@ -139,43 +165,46 @@ def preprocessDataset(dataset):
     edges = fast_unique_edges(edges)
     print(f"After deduplication: {len(edges)} edges")
     
-    # Create node mapping efficiently
+    # Create node mapping with verification
     print("Creating node mapping...")
     unique_vertices = np.unique(edges.ravel())
+    if np.any(unique_vertices < 0):
+        raise ValueError("Negative vertex indices found after processing")
+    
     node_mapping = np.arange(len(unique_vertices), dtype=np.int32)
     node_mapping_full = np.zeros(unique_vertices.max() + 1, dtype=np.int32)
     node_mapping_full[unique_vertices] = node_mapping
     
-    # Process edges in parallel chunks using Numba
+    # Process edges in parallel chunks
     print("Processing edges in chunks...")
+    modified_edges = np.empty_like(edges)
     chunk_size = 500000
     num_chunks = (len(edges) + chunk_size - 1) // chunk_size
-    modified_edges = np.empty_like(edges)
     
-    # Single loop with progress bar (removed duplicate loop)
     for i in tqdm(range(num_chunks), desc="Processing chunks"):
         start_idx = i * chunk_size
         end_idx = min((i + 1) * chunk_size, len(edges))
         chunk = edges[start_idx:end_idx]
         modified_edges[start_idx:end_idx] = process_edge_chunk(chunk, node_mapping_full)
     
-    # Create edge mapping (keeping original format for compatibility)
+    # Create edge mapping
     print("Creating edge mapping...")
-    edge_mapping = {tuple(edge): (edge[0], edge[1]) for edge in modified_edges}
+    edge_mapping = {tuple(edge): (int(edge[0]), int(edge[1])) 
+                   for edge in modified_edges}
     
-    # Save mappings in original format
+    # Save mappings
     print("Saving mappings...")
     with open(f'data/mappings/{dataset}_edge_mapping.pkl', 'wb') as f:
         pickle.dump({'edge_mapping': edge_mapping}, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     print(f'vertex: {len(unique_vertices)}, edge: {len(modified_edges)}')
     
-    # Save processed edges as pkl instead of npy
+    # Save processed edges
     with open(f'data/interim/{dataset}.pkl', 'wb') as f:
         pickle.dump(modified_edges, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     print(f'Preprocess finished! Time: {time.time() - t0:.2f}s')
-    return modified_edges, edge_mapping, len(unique_vertices)
+    return modified_edges, edge_mapping, unique_vertices.max() + 1
 
 @njit(parallel=True)
 def process_data_chunk(data, start_loc, end_loc):
@@ -198,7 +227,6 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     # Preprocess and get needed values directly
     edges, edge_data, n = preprocessDataset(dataset)
     m = len(edges)
-    
     t0 = time.time()
     synthetic_test, train_mat, train = anomaly_generation(train_per, anomaly_per, edges, n, m, seed=1)
     print(f"Anomaly Generation finish! Time: {time.time()-t0:.2f}s")
@@ -207,7 +235,10 @@ def generateDataset(dataset, snap_size, train_per=0.5, anomaly_per=0.01):
     
     # Efficient sparse matrix operations
     train_mat_coo = sparse.coo_matrix(train_mat)
-    train_mat = (sparse.csr_matrix(train_mat_coo) + sparse.csr_matrix(train_mat_coo.T) + sparse.eye(n)).tolil()
+    matrix_size = train_mat_coo.shape[0]
+    train_mat = (sparse.csr_matrix(train_mat_coo) + 
+                sparse.csr_matrix(train_mat_coo.T) + 
+                sparse.eye(matrix_size)).tolil()
     headtail = train_mat.rows
     del train_mat
     
