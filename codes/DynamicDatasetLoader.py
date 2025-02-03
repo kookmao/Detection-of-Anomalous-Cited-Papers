@@ -215,7 +215,7 @@ class DynamicDatasetLoader(dataset):
             # Convert to tensors on appropriate device
             edges = [np.vstack((rows[i], cols[i])).T for i in range(train_size + test_size)]
             adjs, eigen_adjs = self.get_adjs(rows, cols, weights, nb_nodes)
-            labels = [torch.LongTensor(label).to(self.device) for label in labels]
+            labels = [torch.LongTensor(label).to(self.device, non_blocking=True) for label in labels]
             
             snap_train = list(range(train_size))
             snap_test = list(range(train_size, train_size + test_size))

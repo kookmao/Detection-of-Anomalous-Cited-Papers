@@ -13,23 +13,28 @@ from tqdm import tqdm  # Added for progress bar
 
 
 @njit(parallel=True)
-def optimize_edge_order(edges):
+def optimize_edge_order(edges_input):
     """Parallel edge ordering with Numba acceleration"""
-    if not isinstance(edges, np.ndarray):
-        edges = np.array(edges)
+    # Convert input to numpy array if needed
+    edges = np.asarray(edges_input, dtype=np.int32)
     
-    # Ensure indices are within bounds
-    n_nodes = edges.max() + 1
-    mask = (edges[:, 0] < n_nodes) & (edges[:, 1] < n_nodes)
-    edges = edges[mask]
+    # Initialize output array
+    n_edges = len(edges)
+    ordered_edges = np.empty_like(edges)
     
-    for i in prange(len(edges)):
-        if edges[i, 0] > edges[i, 1]:
-            temp = edges[i, 0]
-            edges[i, 0] = edges[i, 1]
-            edges[i, 1] = temp
-    
-    return edges[edges[:, 0] != edges[:, 1]]  # Remove self-loops efficiently
+    # Process edges in parallel
+    for i in prange(n_edges):
+        u, v = edges[i, 0], edges[i, 1]
+        if u > v:
+            ordered_edges[i, 0] = v
+            ordered_edges[i, 1] = u
+        else:
+            ordered_edges[i, 0] = u
+            ordered_edges[i, 1] = v
+            
+    # Remove self-loops
+    mask = ordered_edges[:, 0] != ordered_edges[:, 1]
+    return ordered_edges[mask]
 
 def clean_directories():
     """Delete all files in specified directories except 'i'."""
@@ -56,16 +61,17 @@ def clean_directories():
 
 @njit
 def edge_to_key(edge):
-    """Convert edge to a unique key for comparison"""
-    return edge[0] * 1000000 + edge[1]  # Adjust multiplier based on your max node ID
+    """Convert edge to unique key"""
+    return edge[0] * 1000000 + edge[1]
 
-@njit
+@njit(parallel=True)
 def fast_unique_edges(edges):
-    """Custom implementation of unique for edges"""
-    # First, sort edges based on a unique key
+    """Optimized unique edge finder"""
     n = len(edges)
     keys = np.zeros(n, dtype=np.int64)
-    for i in range(n):
+    
+    # Calculate keys in parallel
+    for i in prange(n):
         keys[i] = edge_to_key(edges[i])
     
     # Sort based on keys
@@ -123,6 +129,7 @@ def process_edge_chunk(chunk, node_array):
         return np.array([])
 
 def preprocessDataset(dataset):
+    """Preprocess dataset with efficient edge processing"""
     print('Preprocess dataset: ' + dataset)
     t0 = time.time()
     
@@ -140,7 +147,6 @@ def preprocessDataset(dataset):
     }
     file_name = file_mapping.get(dataset, f'data/raw/{dataset}')
     
-    # Read and process edges efficiently
     print("Reading dataset...")
     edges = read_dataset_efficient(file_name, dataset)
     print(f"Read {len(edges)} edges")
@@ -153,43 +159,26 @@ def preprocessDataset(dataset):
     edges = fast_unique_edges(edges)
     print(f"After deduplication: {len(edges)} edges")
     
-    # Create node mapping efficiently
+    # Create node mapping
     print("Creating node mapping...")
     unique_vertices = np.unique(edges.ravel())
     node_mapping = np.arange(len(unique_vertices), dtype=np.int32)
     node_mapping_full = np.zeros(unique_vertices.max() + 1, dtype=np.int32)
     node_mapping_full[unique_vertices] = node_mapping
     
-    # Process edges in parallel chunks using Numba
-    print("Processing edges in chunks...")
-    chunk_size = 500000
-    num_chunks = (len(edges) + chunk_size - 1) // chunk_size
-    modified_edges = np.empty_like(edges)
+    # Process edges with updated mapping
+    print("Processing edges...")
+    edge_mapping = {tuple(edge): (edge[0], edge[1]) for edge in edges}
     
-    # Single loop with progress bar (removed duplicate loop)
-    for i in tqdm(range(num_chunks), desc="Processing chunks"):
-        start_idx = i * chunk_size
-        end_idx = min((i + 1) * chunk_size, len(edges))
-        chunk = edges[start_idx:end_idx]
-        modified_edges[start_idx:end_idx] = process_edge_chunk(chunk, node_mapping_full)
-    
-    # Create edge mapping (keeping original format for compatibility)
-    print("Creating edge mapping...")
-    edge_mapping = {tuple(edge): (edge[0], edge[1]) for edge in modified_edges}
-    
-    # Save mappings in original format
+    # Save mappings
     print("Saving mappings...")
     with open(f'data/mappings/{dataset}_edge_mapping.pkl', 'wb') as f:
         pickle.dump({'edge_mapping': edge_mapping}, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-    print(f'vertex: {len(unique_vertices)}, edge: {len(modified_edges)}')
-    
-    # Save processed edges as pkl instead of npy
-    with open(f'data/interim/{dataset}.pkl', 'wb') as f:
-        pickle.dump(modified_edges, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
+    print(f'vertex: {len(unique_vertices)}, edge: {len(edges)}')
     print(f'Preprocess finished! Time: {time.time() - t0:.2f}s')
-    return modified_edges, edge_mapping, len(unique_vertices)
+    
+    return edges, edge_mapping, len(unique_vertices)
 
 @njit(parallel=True)
 def process_data_chunk(data, start_loc, end_loc):
