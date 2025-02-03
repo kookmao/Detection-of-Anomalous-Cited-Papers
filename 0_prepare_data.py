@@ -15,19 +15,21 @@ from tqdm import tqdm  # Added for progress bar
 @njit(parallel=True)
 def optimize_edge_order(edges):
     """Parallel edge ordering with Numba acceleration"""
+    if not isinstance(edges, np.ndarray):
+        edges = np.array(edges)
+    
+    # Ensure indices are within bounds
+    n_nodes = edges.max() + 1
+    mask = (edges[:, 0] < n_nodes) & (edges[:, 1] < n_nodes)
+    edges = edges[mask]
+    
     for i in prange(len(edges)):
         if edges[i, 0] > edges[i, 1]:
-            # Manual swap
             temp = edges[i, 0]
             edges[i, 0] = edges[i, 1]
             edges[i, 1] = temp
     
-    # Remove self-loops
-    non_self = np.zeros(len(edges), dtype=np.bool_)
-    for i in prange(len(edges)):
-        non_self[i] = edges[i, 0] != edges[i, 1]
-    
-    return edges[non_self]
+    return edges[edges[:, 0] != edges[:, 1]]  # Remove self-loops efficiently
 
 def clean_directories():
     """Delete all files in specified directories except 'i'."""
@@ -80,12 +82,15 @@ def fast_unique_edges(edges):
     return sorted_edges[unique_mask]
 
 def read_dataset_efficient(file_path, dataset):
-    """Read dataset with proper header handling for different datasets"""
-    chunks = []
+    total_rows = sum(1 for _ in open(file_path))
+    estimated_chunks = (total_rows // 500000) + 1
+    chunks = np.empty((estimated_chunks * 500000, 2), dtype=np.int32)
+    current_idx = 0
+    
     delimiter = ' ' if dataset in ['digg', 'uci'] else ','
-    header = None if dataset in ['digg', 'uci'] else 0  # Skip header for non-digg/uci datasets
+    header = None if dataset in ['digg', 'uci'] else 0
     usecols = [0, 1] if dataset in ['digg', 'uci'] else ['fromNode', 'toNode']
-
+    
     for chunk in pd.read_csv(
         file_path,
         usecols=usecols,
@@ -95,18 +100,27 @@ def read_dataset_efficient(file_path, dataset):
         engine='c',
         chunksize=500000
     ):
-        chunks.append(chunk.values.astype(np.int32))
+        chunk_size = len(chunk)
+        chunks[current_idx:current_idx + chunk_size] = chunk.values
+        current_idx += chunk_size
     
-    return np.vstack(chunks)
+    return chunks[:current_idx]
 
 @njit(parallel=True)
 def process_edge_chunk(chunk, node_array):
-    """Process edge chunk with Numba acceleration"""
-    result = np.empty_like(chunk)
-    for i in prange(len(chunk)):
-        result[i, 0] = node_array[chunk[i, 0]]
-        result[i, 1] = node_array[chunk[i, 1]]
-    return result
+    try:
+        result = np.empty_like(chunk)
+        for i in prange(len(chunk)):
+            idx0, idx1 = chunk[i, 0], chunk[i, 1]
+            if 0 <= idx0 < len(node_array) and 0 <= idx1 < len(node_array):
+                result[i, 0] = node_array[idx0]
+                result[i, 1] = node_array[idx1]
+            else:
+                result[i] = [-1, -1]  # Mark invalid indices
+        return result[result[:, 0] != -1]  # Remove invalid entries
+    except Exception as e:
+        print(f"Error in process_edge_chunk: {str(e)}")
+        return np.array([])
 
 def preprocessDataset(dataset):
     print('Preprocess dataset: ' + dataset)

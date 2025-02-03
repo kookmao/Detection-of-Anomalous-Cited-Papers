@@ -3,8 +3,11 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import csr_matrix, coo_matrix, lil_matrix
 from sklearn.cluster import SpectralClustering
-from numba import njit
-
+import numpy as np
+from scipy.sparse import coo_matrix, csr_matrix
+from numba import njit, prange
+import warnings
+from typing import Optional, Tuple, List
 
 @njit
 def isin_2d(a, b):
@@ -17,10 +20,16 @@ def anomaly_generation(ini_graph_percent, anomaly_percent, data, n, m, seed=1):
     print(f'[{datetime.datetime.now()}] generating anomalous dataset...')
     print(f'[{datetime.datetime.now()}] initial network: {ini_graph_percent*100:.1f}%, anomaly: {anomaly_percent*100:.1f}%')
 
-    # Split data using vectorized operations
+    np.random.seed(seed)
+    if not isinstance(data, np.ndarray):
+        data = np.array(data, dtype=np.int32)
+    
     train_num = int(ini_graph_percent * m)
-    train = data[:train_num]
-    test = data[train_num:]
+    if train_num <= 0 or train_num >= m:
+        raise ValueError(f"Invalid train_num {train_num} from ini_graph_percent {ini_graph_percent}")
+        
+    train = data[:train_num].copy()  # Create copy to prevent modifications
+    test = data[train_num:].copy()
 
     # Optimized adjacency matrix creation
     adjacency_matrix = edgeList2Adj(data)
@@ -167,37 +176,68 @@ def anomaly_generation2(ini_graph_percent, anomaly_percent, data, n, m,seed = 1)
 
     return synthetic_test, train_mat, train
 
+@njit(parallel=True)
 def processEdges(fake_edges, data):
-    """Vectorized edge processing with numba acceleration"""
-    # Remove self-loops
-    mask = fake_edges[:, 0] != fake_edges[:, 1]
-    fake_edges = fake_edges[mask]
+    """Optimized edge processing with numba acceleration"""
+    if not isinstance(fake_edges, np.ndarray):
+        fake_edges = np.array(fake_edges, dtype=np.int32)
+    if not isinstance(data, np.ndarray):
+        data = np.array(data, dtype=np.int32)
+        
+    # Remove self-loops and sort edges in single pass
+    valid_edges = np.zeros((len(fake_edges), 2), dtype=np.int32)
+    valid_count = 0
     
-    # Order edges
-    swap_idx = fake_edges[:, 0] > fake_edges[:, 1]
-    fake_edges[swap_idx] = fake_edges[swap_idx][:, [1, 0]]
+    for i in prange(len(fake_edges)):
+        u, v = fake_edges[i]
+        if u != v:  # Not a self-loop
+            # Order vertices
+            if u > v:
+                u, v = v, u
+            valid_edges[valid_count] = [u, v]
+            valid_count += 1
+            
+    # Resize array to actual valid edges
+    valid_edges = valid_edges[:valid_count]
     
-    # Remove duplicates
-    fake_edges = np.unique(fake_edges, axis=0)
+    # Remove duplicates efficiently
+    sorted_idx = np.lexsort((valid_edges[:,1], valid_edges[:,0]))
+    valid_edges = valid_edges[sorted_idx]
     
-    # Vectorized check against original edges
-    data_tuples = set(tuple(map(int, edge)) for edge in data)
-    mask = np.array([tuple(edge) not in data_tuples for edge in fake_edges])
-    return fake_edges[mask]
+    # Remove edges that exist in original data
+    mask = np.ones(len(valid_edges), dtype=np.bool_)
+    for i in prange(len(data)):
+        orig_u, orig_v = data[i]
+        if orig_u > orig_v:
+            orig_u, orig_v = orig_v, orig_u
+        for j in prange(len(valid_edges)):
+            if valid_edges[j,0] == orig_u and valid_edges[j,1] == orig_v:
+                mask[j] = False
+                
+    return valid_edges[mask]
 
 
 def edgeList2Adj(data):
-    """Optimized adjacency matrix creation for 0-based node IDs"""
-    users = data[:, 0]  # Remove the -1 offset
-    items = data[:, 1]  # Remove the -1 offset
-    n = max(np.max(users), np.max(items)) + 1  # +1 for 0-based size
+    """Create adjacency matrix with proper bounds checking"""
+    if not isinstance(data, np.ndarray):
+        data = np.array(data, dtype=np.int32)
+        
+    # Ensure non-negative indices
+    if (data < 0).any():
+        raise ValueError("Negative indices found in edge list")
+        
+    # Get dimensions without subtraction (assuming 0-based indexing)
+    users = data[:, 0]
+    items = data[:, 1]
+    n = max(np.max(users), np.max(items)) + 1
     
-    # Efficient sparse matrix construction
+    # Create sparse matrix efficiently
     rows = np.concatenate([users, items])
     cols = np.concatenate([items, users])
+    
     return coo_matrix(
         (np.ones(2*len(data), dtype=np.int32), (rows, cols)),
-        shape=(n, n), 
+        shape=(n, n),
         dtype=np.int32
     ).tocsr()
 

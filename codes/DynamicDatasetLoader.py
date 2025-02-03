@@ -44,28 +44,36 @@ class DynamicDatasetLoader(dataset):
 
         return hop_dict, wl_dict, batch_dict
 
-    def normalize(self, mx):
-        """Row-normalize sparse matrix with epsilon"""
-        rowsum = np.array(mx.sum(1)) + 1e-6  # Avoid division by zero
+    @staticmethod
+    def normalize(mx, epsilon: float = 1e-6):
+        """Row-normalize sparse matrix with epsilon for numerical stability"""
+        if not sp.issparse(mx):
+            mx = sp.csr_matrix(mx)
+        rowsum = np.array(mx.sum(1)) + epsilon
         r_inv = np.power(rowsum, -1).flatten()
         r_mat_inv = sp.diags(r_inv)
         return r_mat_inv.dot(mx)
 
-    def normalize_adj(self, adj):
-        """Symmetrically normalize adjacency matrix with epsilon"""
-        rowsum = np.array(adj.sum(1)) + 1e-6  # Avoid division by zero
+    @staticmethod
+    def normalize_adj(adj, epsilon: float = 1e-6):
+        """Symmetrically normalize adjacency matrix"""
+        if not sp.issparse(adj):
+            adj = sp.csr_matrix(adj)
+        rowsum = np.array(adj.sum(1)) + epsilon
         d_inv_sqrt = np.power(rowsum, -0.5).flatten()
         d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
         return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
 
-    def adj_normalize(self, mx):
-        """Row-normalize sparse matrix"""
-        rowsum = np.array(mx.sum(1))
+    @staticmethod
+    def adj_normalize(mx, epsilon: float = 1e-6):
+        """Row-normalize sparse matrix with handling for infinite values"""
+        if not sp.issparse(mx):
+            mx = sp.csr_matrix(mx)
+        rowsum = np.array(mx.sum(1)) + epsilon
         r_inv = np.power(rowsum, -0.5).flatten()
         r_inv[np.isinf(r_inv)] = 0.
         r_mat_inv = sp.diags(r_inv)
-        mx = r_mat_inv.dot(mx).dot(r_mat_inv)
-        return mx
+        return r_mat_inv.dot(mx).dot(r_mat_inv)
 
     def accuracy(self, output, labels):
         preds = output.max(1)[1].type_as(labels)
@@ -117,79 +125,119 @@ class DynamicDatasetLoader(dataset):
         return adj_normalized
 
     def get_adjs(self, rows, cols, weights, nb_nodes):
-
-        eigen_file_name = 'data/eigen/' + self.dataset_name + '_' + str(self.train_per) + '_' + str(self.anomaly_per) + '.pkl'
-        if not os.path.exists(eigen_file_name):
-            generate_eigen = True
-            print('Generating eigen as: ' + eigen_file_name)
-        else:
-            generate_eigen = False
-            print('Loading eigen from: ' + eigen_file_name)
-            with open(eigen_file_name, 'rb') as f:
-                eigen_adjs_sparse = pickle.load(f)
+        """Create adjacency matrices with proper dimension checks"""
+        try:
+            eigen_file_name = os.path.join('data', 'eigen', 
+                f'{self.dataset_name}_{self.train_per}_{self.anomaly_per}.pkl')
+            
+            # Find actual maximum node ID
+            max_node = max(
+                max(max(row) for row in rows if len(row) > 0),
+                max(max(col) for col in cols if len(col) > 0)
+            )
+            
+            # Adjust nb_nodes to accommodate all indices
+            nb_nodes = max_node + 1
+            
+            generate_eigen = not os.path.exists(eigen_file_name)
             eigen_adjs = []
-            for eigen_adj_sparse in eigen_adjs_sparse:
-                eigen_adjs.append(np.array(eigen_adj_sparse.todense()))
-
-        adjs = []
-        if generate_eigen:
-            eigen_adjs = []
-            eigen_adjs_sparse = []
-
-        for i in range(len(rows)):
-            adj = sp.csr_matrix((weights[i], (rows[i], cols[i])), shape=(nb_nodes, nb_nodes), dtype=np.float32).tocoo()
-            adjs.append(self.preprocess_adj(adj))
-            if self.compute_s:
-                if generate_eigen:
-                    eigen_adj = self.c * inv((sp.eye(adj.shape[0]) - (1 - self.c) * self.adj_normalize(adj)).toarray())
-                    for p in range(adj.shape[0]):
-                        eigen_adj[p,p] = 0.
+            
+            if not generate_eigen:
+                with open(eigen_file_name, 'rb') as f:
+                    eigen_adjs_sparse = pickle.load(f)
+                eigen_adjs = eigen_adjs_sparse
+            
+            adjs = []
+            if generate_eigen:
+                eigen_adjs_sparse = []
+            
+            for i in range(len(rows)):
+                # Validate indices
+                if len(rows[i]) != len(cols[i]) or len(rows[i]) != len(weights[i]):
+                    raise ValueError(f"Dimension mismatch in snapshot {i}")
+                    
+                # Create sparse matrix with corrected dimensions
+                adj = sp.csr_matrix(
+                    (weights[i], (rows[i], cols[i])),
+                    shape=(nb_nodes, nb_nodes),
+                    dtype=np.float32
+                ).tocoo()
+                
+                adjs.append(self.preprocess_adj(adj))
+                
+                if self.compute_s and generate_eigen:
+                    # Rest of eigen computation remains the same
+                    adj_normalized = self.adj_normalize(adj).tocsr()
+                    B = (1 - self.c) * adj_normalized
+                    
+                    S = sp.eye(adj.shape[0], format='csr', dtype=np.float32)
+                    current_term = B.copy()
+                    
+                    for _ in range(50):
+                        if current_term.nnz == 0:
+                            break
+                        S += current_term
+                        current_term = current_term.dot(B)
+                        current_term.data[abs(current_term.data) < 1e-6] = 0
+                        current_term.eliminate_zeros()
+                    
+                    eigen_adj = self.c * S
+                    eigen_adj.setdiag(0)
                     eigen_adj = self.normalize(eigen_adj)
+                    eigen_adjs_sparse.append(eigen_adj)
                     eigen_adjs.append(eigen_adj)
-                    eigen_adjs_sparse.append(sp.csr_matrix(eigen_adj))
-
-            else:
-                eigen_adjs.append(None)
-
-        if generate_eigen:
-            with open(eigen_file_name, 'wb') as f:
-                pickle.dump(eigen_adjs_sparse, f, pickle.HIGHEST_PROTOCOL)
-
-        return adjs, eigen_adjs
+            
+            if generate_eigen:
+                with open(eigen_file_name, 'wb') as f:
+                    pickle.dump(eigen_adjs_sparse, f, pickle.HIGHEST_PROTOCOL)
+            
+            return adjs, eigen_adjs
+            
+        except Exception as e:
+            print(f"Error in get_adjs: {str(e)}")
+        raise
 
     def load(self):
-        """Load dynamic network dataset"""
-        print('Loading {} dataset...'.format(self.dataset_name))
-        with open('data/percent/' + self.dataset_name + '_' + str(self.train_per) + '_' + str(self.anomaly_per) + '.pkl', 'rb') as f:
-            rows, cols, labels, weights, headtail, train_size, test_size, nb_nodes, nb_edges, edge_data = pickle.load(f)
-
-        degrees = np.array([len(x) for x in headtail])
-        num_snap = test_size + train_size
-
-        edges = [np.vstack((rows[i], cols[i])).T for i in range(num_snap)]
-        adjs, eigen_adjs = self.get_adjs(rows, cols, weights, nb_nodes)
-
-        labels = [torch.LongTensor(label) for label in labels]
-
-        snap_train = list(range(num_snap))[:train_size]
-        snap_test = list(range(num_snap))[train_size:]
-
-        idx = list(range(nb_nodes))
-        index_id_map = {i:i for i in idx}
-        idx = np.array(idx)
-        
-
-        return {
-            'X': None, 
-            'A': adjs, 
-            'S': eigen_adjs, 
-            'index_id_map': index_id_map, 
-            'edges': edges,
-            'y': labels, 
-            'idx': idx, 
-            'snap_train': snap_train, 
-            'degrees': degrees,
-            'snap_test': snap_test, 
-            'num_snap': num_snap,
-            'edge_data': edge_data
-        }
+        try:
+            file_path = os.path.join('data', 'percent', 
+                f'{self.dataset_name}_{self.train_per}_{self.anomaly_per}.pkl')
+            
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Data file not found: {file_path}")
+                
+            with open(file_path, 'rb') as f:
+                rows, cols, labels, weights, headtail, train_size, test_size, nb_nodes, nb_edges, edge_data = pickle.load(f)
+                
+            # Validate data
+            if not all(isinstance(x, list) for x in [rows, cols, labels, weights]):
+                raise ValueError("Invalid data format: expected lists for rows, cols, labels, weights")
+                
+            # Convert to tensors on appropriate device
+            edges = [np.vstack((rows[i], cols[i])).T for i in range(train_size + test_size)]
+            adjs, eigen_adjs = self.get_adjs(rows, cols, weights, nb_nodes)
+            labels = [torch.LongTensor(label).to(self.device) for label in labels]
+            
+            snap_train = list(range(train_size))
+            snap_test = list(range(train_size, train_size + test_size))
+            
+            idx = np.array(range(nb_nodes))
+            index_id_map = {i:i for i in idx}  # Maintain 0-based indexing
+            
+            return {
+                'X': None,
+                'A': adjs,
+                'S': eigen_adjs,
+                'index_id_map': index_id_map,
+                'edges': edges,
+                'y': labels,
+                'idx': idx,
+                'snap_train': snap_train,
+                'degrees': np.array([len(x) for x in headtail]),
+                'snap_test': snap_test,
+                'num_snap': train_size + test_size,
+                'edge_data': edge_data
+            }
+            
+        except Exception as e:
+            print(f"Error loading dataset {self.dataset_name}: {str(e)}")
+            raise

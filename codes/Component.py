@@ -1,14 +1,23 @@
 import os
-os.environ["TRANSFORMERS_DISABLE_ONNX"] = "1"
+from typing import Optional, List, Union, Dict
+import warnings
 import torch
 import torch.nn as nn
-from transformers.models.bert.modeling_bert import (
-    BertAttention,
-    BertIntermediate, 
-    BertOutput,
-    BertPreTrainedModel  # Add this
-)
-from transformers import PretrainedConfig
+from torch import Tensor
+
+os.environ["TRANSFORMERS_DISABLE_ONNX"] = "1"
+
+try:
+    from transformers.models.bert.modeling_bert import (
+        BertAttention,
+        BertIntermediate, 
+        BertOutput,
+        BertPreTrainedModel
+    )
+    from transformers import PretrainedConfig
+except ImportError:
+    raise ImportError("Required transformers modules not found. Please install transformers package.")
+
 
 TransformerLayerNorm = torch.nn.LayerNorm
 
@@ -16,22 +25,22 @@ class MyConfig(PretrainedConfig):
 
     def __init__(
         self,
-        k=5,
-        max_hop_dis_index = 100,
-        max_inti_pos_index = 100,
-        hidden_size=32,
-        num_hidden_layers=1,
-        num_attention_heads=1,
-        intermediate_size=32,
-        hidden_act="gelu",
-        hidden_dropout_prob=0.5, #0.5 default
-        attention_probs_dropout_prob=0.3, # 0.3 default
-        initializer_range=0.02,
-        layer_norm_eps=1e-12,
-        is_decoder=False,
-        batch_size = 64,
-        window_size = 1,
-        weight_decay = 5e-4,
+        k: int = 5,
+        max_hop_dis_index: int = 100,
+        max_inti_pos_index: int = 100,
+        hidden_size: int = 32,
+        num_hidden_layers: int = 1,
+        num_attention_heads: int = 1,
+        intermediate_size: int = 32,
+        hidden_act: str = "gelu",
+        hidden_dropout_prob: float = 0.5,
+        attention_probs_dropout_prob: float = 0.3,
+        initializer_range: float = 0.02,
+        layer_norm_eps: float = 1e-12,
+        is_decoder: bool = False,
+        batch_size: int = 64,
+        window_size: int = 1,
+        weight_decay: float = 5e-4,
         **kwargs
     ):
         super(MyConfig, self).__init__(**kwargs)
@@ -84,7 +93,7 @@ class TransformerEncoder(nn.Module):
 
 class EdgeEncoding(nn.Module):
     def __init__(self, config):
-        super(EdgeEncoding, self).__init__()
+        super().__init__()
         self.config = config
         self.inti_pos_embeddings = nn.Embedding(config.max_inti_pos_index, config.hidden_size)
         self.hop_dis_embeddings = nn.Embedding(config.max_hop_dis_index, config.hidden_size)
@@ -93,12 +102,26 @@ class EdgeEncoding(nn.Module):
         self.LayerNorm = TransformerLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, init_pos_ids=None, hop_dis_ids=None, time_dis_ids=None):
+    def forward(
+        self, 
+        init_pos_ids: Optional[torch.Tensor] = None, 
+        hop_dis_ids: Optional[torch.Tensor] = None, 
+        time_dis_ids: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if init_pos_ids is None or hop_dis_ids is None or time_dis_ids is None:
+            raise ValueError("All input tensors must be provided")
+            
         # Ensure input tensors have correct dimensions
+        if not (init_pos_ids.dim() == hop_dis_ids.dim() == time_dis_ids.dim()):
+            raise ValueError("All input tensors must have the same number of dimensions")
+            
+        # Convert to long and ensure on correct device
+        device = init_pos_ids.device
         init_pos_ids = init_pos_ids.long()
         hop_dis_ids = hop_dis_ids.long()
         time_dis_ids = time_dis_ids.long()
         
+        # Compute embeddings
         position_embeddings = self.inti_pos_embeddings(init_pos_ids)
         hop_embeddings = self.hop_dis_embeddings(hop_dis_ids)
         time_embeddings = self.time_dis_embeddings(time_dis_ids)
@@ -107,6 +130,7 @@ class EdgeEncoding(nn.Module):
         embeddings = self.input_dropout(embeddings)
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
+        
         return embeddings
 
 
