@@ -51,54 +51,55 @@ def compute_batch_hop_gpu(node_list, edges_all, num_snap, Ss, k=5, window_size=1
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_hop_dicts = [None] * (window_size-1)
     
-    # Preconvert S matrices
-    Ss_gpu = [torch.as_tensor(S.toarray() if hasattr(S, 'toarray') else S, 
-                            device=device, dtype=torch.float32) for S in Ss]
-    
-    # Preconvert edges
+    # Cache for S tensors (max size = window_size)
+    S_cache = {}
     edge_tensors = [torch.tensor(edges, dtype=torch.long, device=device) 
                    for edges in edges_all]
 
     for snap in range(window_size-1, num_snap):
         batch_hop_dict = {}
         current_edges = edge_tensors[snap]
-        sources = current_edges[:, 0]
-        targets = current_edges[:, 1]
+        sources = current_edges[:, 0].long()
+        targets = current_edges[:, 1].long()
+
+        # Cleanup old S tensors outside the current window
+        min_sl = snap - (window_size - 1)
+        expired_keys = [sl for sl in S_cache if sl < min_sl]
+        for sl in expired_keys:
+            del S_cache[sl]
+        if expired_keys:
+            torch.cuda.empty_cache()
 
         for lookback in range(window_size):
             sl = snap - lookback
-            S = Ss_gpu[sl]
-            
+            if sl not in S_cache:
+                S = Ss[sl]
+                S_dense = S.toarray() if hasattr(S, 'toarray') else S
+                S_tensor = torch.as_tensor(S_dense, device=device, dtype=torch.float32)
+                S_cache[sl] = S_tensor
+            S = S_cache[sl]
+
             # Vectorized scoring
             scores = S[sources] + S[targets]
             scores.scatter_(1, sources.unsqueeze(1), -1000)
             scores.scatter_(1, targets.unsqueeze(1), -1000)
             _, top_k = torch.topk(scores, k, dim=1)
 
-            # Process all edges
+            # Process edges
             for idx in range(len(current_edges)):
                 u = sources[idx].item()
                 v = targets[idx].item()
                 key = f"{snap}_{u}_{v}"
                 
-                # Get neighbor nodes
                 neighbors = [u, v] + top_k[idx].tolist()
-                
-                # Get precomputed hop distances from S matrix
                 hop_u = S[u].cpu().numpy()[neighbors]
                 hop_v = S[v].cpu().numpy()[neighbors]
                 hops = np.minimum(hop_u, hop_v).astype(int).tolist()
                 
-                # Build entries with proper indexing
-                entries = []
-                for i, node in enumerate(neighbors):
-                    entries.append((
-                        int(node),
-                        i,  # Original ranking
-                        min(hops[i], 99),  # Clamp to max hop
-                        lookback
-                    ))
-                
+                entries = [
+                    (int(node), i, min(hops[i], 99), lookback)
+                    for i, node in enumerate(neighbors)
+                ]
                 batch_hop_dict[key] = entries
 
         batch_hop_dicts.append(batch_hop_dict)

@@ -10,6 +10,7 @@ from codes.DynamicDatasetLoader import DynamicDatasetLoader
 from codes.Component import MyConfig
 from codes.DynADModel import DynADModel
 from codes.Settings import Settings
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -30,7 +31,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument('--embedding_dim', type=int, default=32)
     parser.add_argument('--num_hidden_layers', type=int, default=2)
     parser.add_argument('--num_attention_heads', type=int, default=2)
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
 
     # Training params
     parser.add_argument('--max_epoch', type=int, default=100)
